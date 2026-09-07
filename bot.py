@@ -16,12 +16,7 @@ def run_server():
 threading.Thread(target=run_server, daemon=True).start()
 
 
-import os
-import time
-import ccxt
-import pandas as pd
-import pandas_ta as ta
-import requests
+
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
