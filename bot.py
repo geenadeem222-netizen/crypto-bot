@@ -1,64 +1,109 @@
 import os
 import time
+import ccxt
+import pandas as pd
+import pandas_ta as ta
 import requests
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Yahan apne coins aur conditions badal sakte hain
-ALERTS = [
-    {"coin": "bitcoin", "vs_currency": "usd", "condition": "above", "target": 95000.0, "triggered": False},
-    {"coin": "ethereum", "vs_currency": "usd", "condition": "below", "target": 2500.0, "triggered": False}
-]
 
 def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    try:
-        response = requests.post(url, json=payload)
-        return response.json()
-    except Exception as e:
-        print(f"Error sending message: {e}")
+  url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+  payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+  try:
+    requests.post(url, json=payload)
+  except Exception as e:
+    print(f"Telegram error: {e}")
 
-def check_prices():
-    coin_ids = ",".join(set(item["coin"] for item in ALERTS))
-    vs_currencies = ",".join(set(item["vs_currency"] for item in ALERTS))
-    
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_ids}&vs_currencies={vs_currencies}"
-    
-    try:
-        response = requests.get(url)
-        data = response.json()
-        
-        for alert in ALERTS:
-            coin = alert["coin"]
-            vs = alert["vs_currency"]
-            target = alert["target"]
-            condition = alert["condition"]
-            
-            if coin in data and vs in data[coin]:
-                current_price = data[coin][vs]
-                print(f"Checked {coin}: {current_price} {vs.upper()} (Target: {target})")
-                
-                if condition == "above" and current_price >= target and not alert["triggered"]:
-                    send_telegram_message(f"🚨 *Alert Triggered!*\n{coin.upper()} is now **{current_price} {vs.upper()}** (Above target: {target})")
-                    alert["triggered"] = True
-                
-                elif condition == "below" and current_price <= target and not alert["triggered"]:
-                    send_telegram_message(f"🚨 *Alert Triggered!*\n{coin.upper()} is now **{current_price} {vs.upper()}** (Below target: {target})")
-                    alert["triggered"] = True
-                    
-                elif condition == "above" and current_price < target:
-                    alert["triggered"] = False
-                elif condition == "below" and current_price > target:
-                    alert["triggered"] = False
-                    
-    except Exception as e:
-        print(f"API Error: {e}")
+
+def scan_market():
+  exchange = ccxt.binance()
+
+  try:
+    # Binance se markets load karein
+    exchange.load_markets()
+
+    # Sirf USDT pairs uthayein jo active hon (jaise BTC/USDT, ETH/USDT, HEMI/USDT waghera)
+    symbols = [
+        symbol
+        for symbol in exchange.symbols
+        if symbol.endswith("/USDT") and not "UP" in symbol and not "DOWN" in symbol
+    ]
+
+    print(f"Scanning {len(symbols)} coins for strategy conditions...")
+
+    # Har coin ko check karein (aap chahay toh testing ke liye kuch coins tak محدود bhi kar sakte hain)
+    for symbol in symbols:
+      try:
+        # 1. Fetch 1-Hour Data (Trend Confirmation)
+        ohlcv_1h = exchange.fetch_ohlcv(symbol, timeframe="1h", limit=50)
+        if len(ohlcv_1h) < 50:
+          continue
+        df_1h = pd.DataFrame(
+            ohlcv_1h,
+            columns=["timestamp", "open", "high", "low", "close", "volume"],
+        )
+
+        df_1h["rsi_7"] = ta.rsi(df_1h["close"], length=7)
+        df_1h["rsi_14"] = ta.rsi(df_1h["close"], length=14)
+        macd_1h = ta.macd(df_1h["close"], fast=12, slow=26, signal=9)
+        df_1h = pd.concat([df_1h, macd_1h], axis=1)
+
+        latest_1h = df_1h.iloc[-1]
+
+        # 1h Conditions: RSI(7) < RSI(14) AND MACD Bearish
+        cond_1h_rsi = latest_1h["rsi_7"] < latest_1h["rsi_14"]
+        cond_1h_macd = latest_1h["MACD_12_26_9"] < latest_1h["MACDs_12_26_9"]
+
+        if not (cond_1h_rsi and cond_1h_macd):
+          continue  # Agar 1h pass nahi hua toh agle coin par chalay jao
+
+        # 2. Fetch 15-Minute Data (Trigger Execution)
+        ohlcv_15m = exchange.fetch_ohlcv(symbol, timeframe="15m", limit=50)
+        if len(ohlcv_15m) < 50:
+          continue
+        df_15m = pd.DataFrame(
+            ohlcv_15m,
+            columns=["timestamp", "open", "high", "low", "close", "volume"],
+        )
+
+        df_15m["rsi_7"] = ta.rsi(df_15m["close"], length=7)
+        df_15m["rsi_14"] = ta.rsi(df_15m["close"], length=14)
+
+        prev_15m = df_15m.iloc[-2]
+        curr_15m = df_15m.iloc[-1]
+
+        # 15m Bearish Crossover
+        crossover_15m = (prev_15m["rsi_7"] >= prev_15m["rsi_14"]) and (
+            curr_15m["rsi_7"] < curr_15m["rsi_14"]
+        )
+
+        if crossover_15m:
+          # Jaise hi kisi bhi coin par condition match ho, alert bhej do
+          msg = (
+              f"🚨 *BEARISH ALERT MATCHED!*\nCoin: `{symbol}`\n- 1H: RSI(7) <"
+              " RSI(14) & MACD Bearish\n- 15M: RSI(7) crossed below RSI(14)!"
+          )
+          send_telegram_message(msg)
+          time.sleep(2)  # Telegram spam rokne ke liye chota gap
+
+      except Exception as inner_e:
+        # Kisi aik coin mein error aaye toh baqi chaltay rahein
+        continue
+
+  except Exception as e:
+    print(f"Market fetch error: {e}")
+
 
 if __name__ == "__main__":
-    print("Crypto Alert Bot Started...")
-    send_telegram_message("🤖 Crypto Alert Bot is online and monitoring 24/7!")
-    while True:
-        check_prices()
-        time.sleep(60)
+  send_telegram_message(
+      "🤖 Multi-Coin Crypto Scanner Bot is online and monitoring all USDT"
+      " pairs 24/7!"
+  )
+
+  while True:
+    scan_market()
+    # Poora market scan karne ke baad 5 minute ka waqfa
+    time.sleep(300)
