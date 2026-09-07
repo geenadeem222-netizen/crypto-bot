@@ -7,22 +7,6 @@ import ccxt
 import pandas as pd
 import pandas_ta as ta
 
-# --- Render Web Service Port Binding Server ---
-class SimpleHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is running!")
-
-def run_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(('0.0.0.0', port), SimpleHandler)
-    server.serve_forever()
-
-# Background mein HTTP server start kar rahe hain taake Render ka port requirement poora ho
-threading.Thread(target=run_server, daemon=True).start()
-# ---------------------------------------------
-
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -36,10 +20,8 @@ def send_telegram_message(message):
 
 def scan_market():
     exchange = ccxt.binance()
-
     try:
         exchange.load_markets()
-
         symbols = [
             symbol
             for symbol in exchange.symbols
@@ -105,11 +87,24 @@ def scan_market():
     except Exception as e:
         print(f"Market fetch error: {e}")
 
-if __name__ == "__main__":
+def run_bot():
     send_telegram_message(
         "🤖 Multi-Coin Crypto Scanner Bot is online and monitoring all USDT pairs 24/7!"
     )
-
     while True:
         scan_market()
         time.sleep(300)
+
+# Bot ko background thread mein chala diya taake main thread free rahe
+threading.Thread(target=run_bot, daemon=True).start()
+
+# Main thread par HTTP server chala rahe hain taake Render ka port foran bind ho jaye
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running!")
+
+port = int(os.environ.get("PORT", 10000))
+server = HTTPServer(('0.0.0.0', port), SimpleHandler)
+server.serve_forever()
