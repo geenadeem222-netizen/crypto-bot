@@ -19,7 +19,7 @@ def send_telegram_message(message):
         print(f"Telegram error: {e}")
 
 def scan_market():
-    exchange = ccxt.binance()
+    exchange = ccxt.mexc()
     try:
         exchange.load_markets()
         symbols = [
@@ -89,7 +89,7 @@ def scan_market():
 
 def run_bot():
     send_telegram_message(
-        "🤖 Multi-Coin Crypto Scanner Bot is online and monitoring all USDT pairs 24/7!"
+        "🤖 Multi-Coin Crypto Scanner Bot is online and monitoring all USDT pairs on MEXC 24/7!"
     )
     while True:
         scan_market()
