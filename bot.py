@@ -12,7 +12,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram credentials missing!")
+        print("Telegram Credentials missing!")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
@@ -22,50 +22,25 @@ def send_telegram_message(message):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-def get_binance_symbols_unrestricted():
-    """Binance ke public market data endpoint se pairs fetch karta hai jo Geo-block nahi hota"""
-    try:
-        url = "https://data-api.binance.vision/api/v3/exchangeInfo"
-        res = requests.get(url, timeout=10).json()
-        binance_symbols = set([
-            f"{s['baseAsset']}/{s['quoteAsset']}" for s in res.get('symbols', [])
-            if s['quoteAsset'] == 'USDT' and s['status'] == 'TRADING' and "UP" not in s['symbol'] and "DOWN" not in s['symbol']
-        ])
-        return binance_symbols
-    except Exception as e:
-        print(f"Error fetching Binance public symbols: {e}")
-        return set()
-
 def get_filtered_symbols(mexc_exchange):
     try:
-        print("Fetching markets from MEXC and Binance Public API...")
+        print("Fetching markets from MEXC...")
         mexc_exchange.load_markets()
-        
-        mexc_symbols = set([
+
+        symbols = [
             symbol for symbol in mexc_exchange.symbols
             if symbol.endswith("/USDT") and "UP" not in symbol and "DOWN" not in symbol
-        ])
+        ]
 
-        binance_symbols = get_binance_symbols_unrestricted()
-        
-        # Dono exchanges ke common symbols
-        common_symbols = mexc_symbols.intersection(binance_symbols)
-        print(f"Total Common USDT Pairs found: {len(common_symbols)}")
-
-        if not common_symbols:
-            return []
-
-        # MEXC tickers for volume check
-        mexc_tickers = mexc_exchange.fetch_tickers(list(common_symbols))
+        mexc_tickers = mexc_exchange.fetch_tickers(symbols)
 
         filtered_symbols = []
-        MIN_VOLUME = 100_000_000  # $100 Million USDT
+        MIN_VOLUME = 100_000_000  # Strictly > $100M Volume Filter
 
-        for symbol in common_symbols:
-            ticker = mexc_tickers.get(symbol)
+        for symbol, ticker in mexc_tickers.items():
             if ticker:
-                vol = ticker.get("quoteVolume") or (ticker.get("baseVolume", 0) * ticker.get("last", 0))
-                if vol and vol >= MIN_VOLUME:
+                vol = ticker.get("quoteVolume") or 0
+                if vol > MIN_VOLUME:
                     filtered_symbols.append(symbol)
 
         print(f"Matched >$100M Vol Symbols ({len(filtered_symbols)}): {filtered_symbols}")
@@ -77,11 +52,10 @@ def get_filtered_symbols(mexc_exchange):
 
 def scan_market():
     mexc = ccxt.mexc({'enableRateLimit': True})
-
     try:
         symbols = get_filtered_symbols(mexc)
         if not symbols:
-            print("No symbols passed the >$100M volume filter in this cycle.")
+            print("No symbols with >$100M volume found in this cycle.")
             return
 
         for symbol in symbols:
@@ -91,11 +65,7 @@ def scan_market():
                 if len(ohlcv_1h) < 200:
                     continue
                 
-                df_1h = pd.DataFrame(
-                    ohlcv_1h,
-                    columns=["timestamp", "open", "high", "low", "close", "volume"],
-                )
-
+                df_1h = pd.DataFrame(ohlcv_1h, columns=["timestamp", "open", "high", "low", "close", "volume"])
                 df_1h["rsi_7"] = ta.rsi(df_1h["close"], length=7)
                 df_1h["rsi_14"] = ta.rsi(df_1h["close"], length=14)
                 df_1h["ema_7"] = ta.ema(df_1h["close"], length=7)
@@ -104,12 +74,8 @@ def scan_market():
                 df_1h["ema_200"] = ta.ema(df_1h["close"], length=200)
 
                 latest_1h = df_1h.iloc[-1]
-
                 cond_1h_rsi = latest_1h["rsi_7"] < latest_1h["rsi_14"]
-                cond_1h_ema = (
-                    latest_1h["ema_7"] < latest_1h["ema_21"] <
-                    latest_1h["ema_55"] < latest_1h["ema_200"]
-                )
+                cond_1h_ema = latest_1h["ema_7"] < latest_1h["ema_21"] < latest_1h["ema_55"] < latest_1h["ema_200"]
 
                 if not (cond_1h_rsi and cond_1h_ema):
                     continue
@@ -119,11 +85,7 @@ def scan_market():
                 if len(ohlcv_15m) < 50:
                     continue
                 
-                df_15m = pd.DataFrame(
-                    ohlcv_15m,
-                    columns=["timestamp", "open", "high", "low", "close", "volume"],
-                )
-
+                df_15m = pd.DataFrame(ohlcv_15m, columns=["timestamp", "open", "high", "low", "close", "volume"])
                 df_15m["rsi_7"] = ta.rsi(df_15m["close"], length=7)
                 df_15m["rsi_14"] = ta.rsi(df_15m["close"], length=14)
                 macd_15m = ta.macd(df_15m["close"], fast=12, slow=26, signal=9)
@@ -132,32 +94,28 @@ def scan_market():
                 prev_15m = df_15m.iloc[-2]
                 curr_15m = df_15m.iloc[-1]
 
-                crossover_15m_rsi = (prev_15m["rsi_7"] >= prev_15m["rsi_14"]) and (
-                    curr_15m["rsi_7"] < curr_15m["rsi_14"]
-                )
+                crossover_15m_rsi = (prev_15m["rsi_7"] >= prev_15m["rsi_14"]) and (curr_15m["rsi_7"] < curr_15m["rsi_14"])
                 cond_15m_macd = curr_15m["MACD_12_26_9"] < curr_15m["MACDs_12_26_9"]
 
                 if crossover_15m_rsi and cond_15m_macd:
                     msg = (
-                        f"🚨 *BEARISH SIGNAL MATCHED!*\n"
-                        f"Coin: `{symbol}` (Binance & MEXC Listed)\n"
-                        f"- 24h Volume: > $100M\n"
-                        f"- 1H: RSI(7) < RSI(14) & Bearish EMA Ribbon (7<21<55<200)\n"
-                        f"- 15M: RSI Fresh Bearish Crossover & MACD Bearish"
+                        f"🚨 *BEARISH ALERT MATCHED!*\n"
+                        f"Coin: `{symbol}`\n"
+                        f"- 24h Vol: > $100M\n"
+                        f"- 1H: RSI & EMA Ribbon Bearish\n"
+                        f"- 15M: RSI Crossover & MACD Bearish"
                     )
                     send_telegram_message(msg)
                     time.sleep(2)
-
             except Exception as inner_e:
                 print(f"Error checking {symbol}: {inner_e}")
                 continue
-
     except Exception as e:
         print(f"Market scan error: {e}")
 
 def run_bot():
-    time.sleep(3)
-    send_telegram_message("🤖 Bot Active & Fixed! Scanning Binance+MEXC pairs with >$100M Volume.")
+    time.sleep(2)
+    send_telegram_message("🤖 Crypto Bot Updated! Active Filter: > $100M 24h Volume.")
     while True:
         scan_market()
         time.sleep(300)
