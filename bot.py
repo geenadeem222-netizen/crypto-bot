@@ -11,68 +11,86 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def send_telegram_message(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram credentials missing!")
+        return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
-        resp = requests.post(url, json=payload)
-        print(f"Telegram Post Status: {resp.status_code}")
+        resp = requests.post(url, json=payload, timeout=10)
+        print(f"Telegram status: {resp.status_code}")
     except Exception as e:
         print(f"Telegram error: {e}")
 
-def get_filtered_symbols(mexc_exchange, binance_exchange):
+def get_binance_symbols_unrestricted():
+    """Binance ke public market data endpoint se pairs fetch karta hai jo Geo-block nahi hota"""
     try:
-        print("Fetching markets from MEXC & Binance...")
-        mexc_exchange.load_markets()
-        binance_exchange.load_markets()
+        url = "https://data-api.binance.vision/api/v3/exchangeInfo"
+        res = requests.get(url, timeout=10).json()
+        binance_symbols = set([
+            f"{s['baseAsset']}/{s['quoteAsset']}" for s in res.get('symbols', [])
+            if s['quoteAsset'] == 'USDT' and s['status'] == 'TRADING' and "UP" not in s['symbol'] and "DOWN" not in s['symbol']
+        ])
+        return binance_symbols
+    except Exception as e:
+        print(f"Error fetching Binance public symbols: {e}")
+        return set()
 
+def get_filtered_symbols(mexc_exchange):
+    try:
+        print("Fetching markets from MEXC and Binance Public API...")
+        mexc_exchange.load_markets()
+        
         mexc_symbols = set([
             symbol for symbol in mexc_exchange.symbols
             if symbol.endswith("/USDT") and "UP" not in symbol and "DOWN" not in symbol
         ])
 
-        binance_symbols = set([
-            symbol for symbol in binance_exchange.symbols
-            if symbol.endswith("/USDT") and "UP" not in symbol and "DOWN" not in symbol
-        ])
-
+        binance_symbols = get_binance_symbols_unrestricted()
+        
+        # Dono exchanges ke common symbols
         common_symbols = mexc_symbols.intersection(binance_symbols)
-        print(f"Total Common Pairs: {len(common_symbols)}")
+        print(f"Total Common USDT Pairs found: {len(common_symbols)}")
 
-        # Fetch tickers in batches to avoid rate limit issues
+        if not common_symbols:
+            return []
+
+        # MEXC tickers for volume check
         mexc_tickers = mexc_exchange.fetch_tickers(list(common_symbols))
 
         filtered_symbols = []
-        MIN_VOLUME = 100_000_000  # $100M Volume Filter
+        MIN_VOLUME = 100_000_000  # $100 Million USDT
 
         for symbol in common_symbols:
             ticker = mexc_tickers.get(symbol)
-            if ticker and ticker.get("quoteVolume"):
-                if ticker["quoteVolume"] >= MIN_VOLUME:
+            if ticker:
+                vol = ticker.get("quoteVolume") or (ticker.get("baseVolume", 0) * ticker.get("last", 0))
+                if vol and vol >= MIN_VOLUME:
                     filtered_symbols.append(symbol)
 
-        print(f"Pairs matched (> $100M Vol): {len(filtered_symbols)} coins -> {filtered_symbols}")
+        print(f"Matched >$100M Vol Symbols ({len(filtered_symbols)}): {filtered_symbols}")
         return filtered_symbols
 
     except Exception as e:
-        print(f"Error fetching symbols filter: {e}")
+        print(f"Error filtering symbols: {e}")
         return []
 
 def scan_market():
     mexc = ccxt.mexc({'enableRateLimit': True})
-    binance = ccxt.binance({'enableRateLimit': True})
 
     try:
-        symbols = get_filtered_symbols(mexc, binance)
+        symbols = get_filtered_symbols(mexc)
         if not symbols:
-            print("No symbols matched volume/exchange criteria this round.")
+            print("No symbols passed the >$100M volume filter in this cycle.")
             return
 
         for symbol in symbols:
             try:
-                # 1-Hour Data Check
+                # 1. 1-Hour Timeframe Check
                 ohlcv_1h = mexc.fetch_ohlcv(symbol, timeframe="1h", limit=250)
                 if len(ohlcv_1h) < 200:
                     continue
+                
                 df_1h = pd.DataFrame(
                     ohlcv_1h,
                     columns=["timestamp", "open", "high", "low", "close", "volume"],
@@ -96,10 +114,11 @@ def scan_market():
                 if not (cond_1h_rsi and cond_1h_ema):
                     continue
 
-                # 15-Minute Data Check
+                # 2. 15-Minute Timeframe Check
                 ohlcv_15m = mexc.fetch_ohlcv(symbol, timeframe="15m", limit=60)
                 if len(ohlcv_15m) < 50:
                     continue
+                
                 df_15m = pd.DataFrame(
                     ohlcv_15m,
                     columns=["timestamp", "open", "high", "low", "close", "volume"],
@@ -120,24 +139,25 @@ def scan_market():
 
                 if crossover_15m_rsi and cond_15m_macd:
                     msg = (
-                        f"🚨 *BEARISH ALERT MATCHED!*\n"
-                        f"Coin: `{symbol}` (MEXC + Binance)\n"
-                        f"- 24h Vol: > $100M\n"
-                        f"- 1H: RSI(7) < RSI(14) & EMA Ribbon Bearish (7 < 21 < 55 < 200)\n"
-                        f"- 15M: RSI Fresh Bearish Crossover & MACD Bearish!"
+                        f"🚨 *BEARISH SIGNAL MATCHED!*\n"
+                        f"Coin: `{symbol}` (Binance & MEXC Listed)\n"
+                        f"- 24h Volume: > $100M\n"
+                        f"- 1H: RSI(7) < RSI(14) & Bearish EMA Ribbon (7<21<55<200)\n"
+                        f"- 15M: RSI Fresh Bearish Crossover & MACD Bearish"
                     )
                     send_telegram_message(msg)
                     time.sleep(2)
 
             except Exception as inner_e:
-                print(f"Inner loop error for {symbol}: {inner_e}")
+                print(f"Error checking {symbol}: {inner_e}")
                 continue
 
     except Exception as e:
-        print(f"Market fetch error: {e}")
+        print(f"Market scan error: {e}")
 
 def run_bot():
-    send_telegram_message("🤖 Multi-Coin Scanner Strategy Bot is running online!")
+    time.sleep(3)
+    send_telegram_message("🤖 Bot Active & Fixed! Scanning Binance+MEXC pairs with >$100M Volume.")
     while True:
         scan_market()
         time.sleep(300)
@@ -148,7 +168,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is running!")
+        self.wfile.write(b"Bot Server Active!")
 
     def do_HEAD(self):
         self.send_response(200)
