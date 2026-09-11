@@ -35,7 +35,7 @@ def get_combined_volume_symbols(mexc_exchange):
         }
         
         high_vol_coins = set()
-        MIN_COMBINED_VOL = 50_000_000  # 50M Volume Filter
+        MIN_COMBINED_VOL = 50_000_000  # $50M Volume Filter
 
         try:
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -46,7 +46,7 @@ def get_combined_volume_symbols(mexc_exchange):
                     total_vol = coin.get("total_volume") or 0
                     if total_vol >= MIN_COMBINED_VOL:
                         high_vol_coins.add(coin.get("symbol", "").upper())
-                print(f"✅ CoinGecko: Found {len(high_vol_coins)} coins with >=$100M Combined Volume.", flush=True)
+                print(f"✅ CoinGecko: Found {len(high_vol_coins)} coins with >=$50M Combined Volume.", flush=True)
             else:
                 print(f"⚠️ CoinGecko Rate Limited ({resp.status_code}). Using MEXC Bulk Fallback...", flush=True)
         except Exception as cg_err:
@@ -56,7 +56,6 @@ def get_combined_volume_symbols(mexc_exchange):
         mexc_exchange.load_markets()
         matched_symbols = []
 
-        # If CoinGecko failed, fetch ALL tickers in 1 SINGLE request (no rate limits!)
         mexc_tickers = {}
         if not high_vol_coins:
             try:
@@ -67,7 +66,7 @@ def get_combined_volume_symbols(mexc_exchange):
 
         for symbol in mexc_exchange.symbols:
             if symbol.endswith(":USDT") and "UP" not in symbol and "DOWN" not in symbol:
-                base_currency = symbol.split("/")[0].split(":")[0]  # Extract coin name
+                base_currency = symbol.split("/")[0].split(":")[0]
                 
                 if high_vol_coins:
                     if base_currency in high_vol_coins:
@@ -89,7 +88,7 @@ def scan_market():
     mexc = ccxt.mexc({
         'enableRateLimit': True,
         'rateLimit': 1200,
-        'options': {'defaultType': 'swap'}  # MEXC Futures Mode
+        'options': {'defaultType': 'swap'}
     })
     try:
         print("\n🚀 Starting new Market Scan cycle...", flush=True)
@@ -100,7 +99,7 @@ def scan_market():
 
         for symbol in symbols:
             try:
-                time.sleep(0.5)  # Safe delay between chart fetches
+                time.sleep(0.5)
                 
                 # 1. 1-Hour Timeframe Check
                 ohlcv_1h = mexc.fetch_ohlcv(symbol, timeframe="1h", limit=250)
@@ -166,10 +165,8 @@ def run_bot():
         scan_market()
         time.sleep(300)
 
-# Run Bot in Background Thread
 threading.Thread(target=run_bot, daemon=True).start()
 
-# HTTP Web Server for Render Keep-Alive
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
