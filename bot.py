@@ -35,7 +35,7 @@ def get_combined_volume_symbols(mexc_exchange):
         }
         
         high_vol_coins = set()
-        MIN_COMBINED_VOL = 100_000_000  # $100M Volume Filter
+        MIN_COMBINED_VOL = 50_000_000  # $100M Volume Filter
 
         try:
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -143,7 +143,7 @@ def scan_market():
                     msg = (
                         f"🚨 *BEARISH ALERT MATCHED!*\n"
                         f"Coin: `{symbol}`\n"
-                        f"- Combined Global Vol: >= $100M\n"
+                        f"- Combined Global Vol: >= $50M\n"
                         f"- Market: MEXC Futures\n"
                         f"- 1H: RSI & EMA Ribbon Bearish\n"
                         f"- 15M: RSI Crossover & MACD Bearish"
@@ -161,7 +161,7 @@ def scan_market():
 def run_bot():
     time.sleep(3)
     print("🤖 Bot Service Thread Started!", flush=True)
-    send_telegram_message("🤖 Crypto Bot Online! Active Filter: >= $100M Combined All-Exchange Volume.")
+    send_telegram_message("🤖 Crypto Bot Online! Active Filter: >= $50M Combined All-Exchange Volume.")
     while True:
         scan_market()
         time.sleep(300)
