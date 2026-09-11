@@ -101,7 +101,7 @@ def scan_market():
                     msg = (
                         f"🚨 *BEARISH ALERT MATCHED!*\n"
                         f"Coin: `{symbol}`\n"
-                        f"- 24h Vol: > $100M\n"
+                        f"- 24h Vol: > $50M\n"
                         f"- 1H: RSI & EMA Ribbon Bearish\n"
                         f"- 15M: RSI Crossover & MACD Bearish"
                     )
