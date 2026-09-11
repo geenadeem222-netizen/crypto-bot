@@ -35,12 +35,10 @@ def get_combined_volume_symbols(mexc_exchange):
         }
         
         high_vol_coins = set()
-        MIN_COMBINED_VOL = 100_000_000  # Combined All-Exchange $100M Volume Filter
+        MIN_COMBINED_VOL = 100_000_000  # $100M Volume Filter
 
         try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
-            }
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
             resp = requests.get(cg_url, params=params, headers=headers, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
@@ -50,33 +48,37 @@ def get_combined_volume_symbols(mexc_exchange):
                         high_vol_coins.add(coin.get("symbol", "").upper())
                 print(f"✅ CoinGecko: Found {len(high_vol_coins)} coins with >=$100M Combined Volume.", flush=True)
             else:
-                print(f"⚠️ CoinGecko Rate Limited ({resp.status_code}). Falling back to MEXC high volume check...", flush=True)
+                print(f"⚠️ CoinGecko Rate Limited ({resp.status_code}). Using MEXC Bulk Fallback...", flush=True)
         except Exception as cg_err:
-            print(f"⚠️ CoinGecko API error: {cg_err}. Falling back to MEXC...", flush=True)
+            print(f"⚠️ CoinGecko API error: {cg_err}. Using MEXC Bulk Fallback...", flush=True)
 
         print("🔄 Step 2: Loading MEXC Futures markets...", flush=True)
-        time.sleep(2)  # Delay to prevent MEXC 510 Rate Limit
         mexc_exchange.load_markets()
         matched_symbols = []
 
+        # If CoinGecko failed, fetch ALL tickers in 1 SINGLE request (no rate limits!)
+        mexc_tickers = {}
+        if not high_vol_coins:
+            try:
+                print("⚡ Fetching bulk tickers from MEXC...", flush=True)
+                mexc_tickers = mexc_exchange.fetch_tickers()
+            except Exception as t_err:
+                print(f"MEXC Tickers Error: {t_err}", flush=True)
+
         for symbol in mexc_exchange.symbols:
             if symbol.endswith(":USDT") and "UP" not in symbol and "DOWN" not in symbol:
-                base_currency = symbol.split("/")[0]  # Extract coin symbol
+                base_currency = symbol.split("/")[0].split(":")[0]  # Extract coin name
                 
                 if high_vol_coins:
                     if base_currency in high_vol_coins:
                         matched_symbols.append(symbol)
                 else:
-                    # Fallback check directly on MEXC Futures
-                    try:
-                        ticker = mexc_exchange.fetch_ticker(symbol)
-                        time.sleep(0.2)  # Small rate-limit delay
-                        if ticker and (ticker.get("quoteVolume") or 0) >= MIN_COMBINED_VOL:
-                            matched_symbols.append(symbol)
-                    except Exception:
-                        continue
+                    ticker = mexc_tickers.get(symbol)
+                    if ticker and (ticker.get("quoteVolume") or 0) >= MIN_COMBINED_VOL:
+                        matched_symbols.append(symbol)
 
-        print(f"🎯 Matched Symbols to scan on MEXC ({len(matched_symbols)}): {matched_symbols}", flush=True)
+        print(f"🎯 Total Matched Symbols to scan: {len(matched_symbols)}", flush=True)
+        print(f"Coins: {matched_symbols}", flush=True)
         return matched_symbols
 
     except Exception as e:
@@ -98,7 +100,7 @@ def scan_market():
 
         for symbol in symbols:
             try:
-                time.sleep(1)  # Prevents MEXC "Requests are too frequent" error
+                time.sleep(0.5)  # Safe delay between chart fetches
                 
                 # 1. 1-Hour Timeframe Check
                 ohlcv_1h = mexc.fetch_ohlcv(symbol, timeframe="1h", limit=250)
@@ -151,6 +153,8 @@ def scan_market():
             except Exception as inner_e:
                 print(f"Error checking {symbol}: {inner_e}", flush=True)
                 continue
+
+        print("💤 Scan complete. Waiting 5 minutes for next cycle...", flush=True)
     except Exception as e:
         print(f"Market scan error: {e}", flush=True)
 
@@ -160,7 +164,6 @@ def run_bot():
     send_telegram_message("🤖 Crypto Bot Online! Active Filter: >= $100M Combined All-Exchange Volume.")
     while True:
         scan_market()
-        print("💤 Scan complete. Waiting 5 minutes for next cycle...", flush=True)
         time.sleep(300)
 
 # Run Bot in Background Thread
