@@ -35,7 +35,7 @@ def get_combined_volume_symbols(mexc_exchange):
         }
         
         high_vol_coins = set()
-        MIN_COMBINED_VOL = 50_000_000  # $100M Volume Filter
+        MIN_COMBINED_VOL = 50_000_000  # 50M Volume Filter
 
         try:
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
