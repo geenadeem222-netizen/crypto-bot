@@ -35,7 +35,7 @@ def get_filtered_symbols(mexc_exchange):
         mexc_tickers = mexc_exchange.fetch_tickers(symbols)
 
         filtered_symbols = []
-        MIN_VOLUME = 100_000_000  # Strictly > $100M Volume Filter
+        MIN_VOLUME = 50_000_000  # Strictly > $100M Volume Filter
 
         for symbol, ticker in mexc_tickers.items():
             if ticker:
@@ -43,7 +43,7 @@ def get_filtered_symbols(mexc_exchange):
                 if vol > MIN_VOLUME:
                     filtered_symbols.append(symbol)
 
-        print(f"Matched >$100M Vol Symbols ({len(filtered_symbols)}): {filtered_symbols}")
+        print(f"Matched >$50M Vol Symbols ({len(filtered_symbols)}): {filtered_symbols}")
         return filtered_symbols
 
     except Exception as e:
@@ -115,7 +115,7 @@ def scan_market():
 
 def run_bot():
     time.sleep(2)
-    send_telegram_message("🤖 Crypto Bot Updated! Active Filter: > $100M 24h Volume.")
+    send_telegram_message("🤖 Crypto Bot Updated! Active Filter: > $50M 24h Volume.")
     while True:
         scan_market()
         time.sleep(300)
