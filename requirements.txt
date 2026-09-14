@@ -1,4 +1,4 @@
 requests==2.31.0
 ccxt
 pandas
-pandas-ta --no-build-isolation
+https://github.com/twopirllc/pandas-ta/tarball/development#egg=pandas-ta
