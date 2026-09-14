@@ -1,4 +1,4 @@
 requests==2.31.0
 ccxt
 pandas
-https://github.com
+git+https://github.com
