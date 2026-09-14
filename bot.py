@@ -2,6 +2,8 @@ import requests
 import time
 import json
 import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, timezone
 
 
@@ -32,8 +34,10 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 SCAN_SECONDS = 30
 
+# Wait this many seconds after a new 5M candle starts
 FIVE_MIN_CONFIRM_SECONDS = 15
 
+# Minimum OI movement required
 MIN_OI_CHANGE_PERCENT = 0.0
 
 STATE_FILE = "alert_state.json"
@@ -44,11 +48,67 @@ MAX_RETRIES = 3
 
 
 # ============================================================
-# CUSTOM EXCEPTION
+# BINANCE RESTRICTED ERROR
 # ============================================================
 
 class BinanceRestrictedError(Exception):
     pass
+
+
+# ============================================================
+# RENDER HEALTH SERVER
+# ============================================================
+
+class HealthHandler(BaseHTTPRequestHandler):
+
+    def do_GET(self):
+
+        self.send_response(200)
+
+        self.send_header(
+            "Content-Type",
+            "text/plain"
+        )
+
+        self.end_headers()
+
+        self.wfile.write(
+            b"OI Funding Scanner is running"
+        )
+
+    def do_HEAD(self):
+
+        self.send_response(200)
+
+        self.send_header(
+            "Content-Type",
+            "text/plain"
+        )
+
+        self.end_headers()
+
+    def log_message(self, format, *args):
+
+        return
+
+
+def start_health_server():
+
+    # Render automatically provides PORT
+    port = int(
+        os.getenv("PORT", "10000")
+    )
+
+    server = HTTPServer(
+        ("0.0.0.0", port),
+        HealthHandler
+    )
+
+    print(
+        f"Health server listening on port {port}"
+    )
+
+    server.serve_forever()
 
 
 # ============================================================
@@ -59,7 +119,10 @@ def binance_get(endpoint, params=None):
 
     url = BASE_URL + endpoint
 
-    for attempt in range(1, MAX_RETRIES + 1):
+    for attempt in range(
+        1,
+        MAX_RETRIES + 1
+    ):
 
         try:
 
@@ -74,7 +137,7 @@ def binance_get(endpoint, params=None):
 
                 raise BinanceRestrictedError(
                     "Binance API returned HTTP 451. "
-                    "The Render server IP/location is restricted."
+                    "The server IP/location is restricted."
                 )
 
             response.raise_for_status()
@@ -94,7 +157,9 @@ def binance_get(endpoint, params=None):
 
             if attempt < MAX_RETRIES:
 
-                time.sleep(2 * attempt)
+                time.sleep(
+                    2 * attempt
+                )
 
     return None
 
@@ -107,13 +172,17 @@ def send_telegram(message):
 
     if not TELEGRAM_BOT_TOKEN:
 
-        print("Telegram token is missing.")
+        print(
+            "Telegram token is missing."
+        )
 
         return False
 
     if not TELEGRAM_CHAT_ID:
 
-        print("Telegram chat ID is missing.")
+        print(
+            "Telegram chat ID is missing."
+        )
 
         return False
 
@@ -167,7 +236,9 @@ def send_telegram(message):
 
 def load_state():
 
-    if not os.path.exists(STATE_FILE):
+    if not os.path.exists(
+        STATE_FILE
+    ):
 
         return {}
 
@@ -235,12 +306,17 @@ def get_symbols():
 
     symbols = []
 
-    for item in data.get("symbols", []):
+    for item in data.get(
+        "symbols",
+        []
+    ):
 
         if (
             item.get("quoteAsset") == "USDT"
-            and item.get("contractType") == "PERPETUAL"
-            and item.get("status") == "TRADING"
+            and
+            item.get("contractType") == "PERPETUAL"
+            and
+            item.get("status") == "TRADING"
         ):
 
             symbols.append(
@@ -268,7 +344,9 @@ def get_all_funding():
 
     for item in data:
 
-        symbol = item.get("symbol")
+        symbol = item.get(
+            "symbol"
+        )
 
         rate = item.get(
             "lastFundingRate"
@@ -276,9 +354,14 @@ def get_all_funding():
 
         try:
 
-            funding[symbol] = float(rate)
+            funding[symbol] = float(
+                rate
+            )
 
-        except (TypeError, ValueError):
+        except (
+            TypeError,
+            ValueError
+        ):
 
             continue
 
@@ -345,7 +428,10 @@ def get_oi_history(
             data[-1]["sumOpenInterest"]
         )
 
-        return old_oi, new_oi
+        return (
+            old_oi,
+            new_oi
+        )
 
     except (
         KeyError,
@@ -437,6 +523,7 @@ def get_timeframe_direction(
 
         return None
 
+    # OI and funding must agree
     if (
         oi_direction
         != funding_direction
@@ -473,9 +560,17 @@ def get_current_5m_candle(
         candle = data[0]
 
         return {
-            "open_time": int(candle[0]),
-            "open": float(candle[1]),
-            "close": float(candle[4])
+            "open_time": int(
+                candle[0]
+            ),
+
+            "open": float(
+                candle[1]
+            ),
+
+            "close": float(
+                candle[4]
+            )
         }
 
     except (
@@ -513,7 +608,7 @@ def check_5m_direction(
         - candle["open_time"]
     ) / 1000
 
-    # Wait for confirmation period
+    # Wait for confirmation
     if (
         seconds_from_open
         < FIVE_MIN_CONFIRM_SECONDS
@@ -521,9 +616,13 @@ def check_5m_direction(
 
         return False
 
-    open_price = candle["open"]
+    open_price = candle[
+        "open"
+    ]
 
-    current_price = candle["close"]
+    current_price = candle[
+        "close"
+    ]
 
     if open_price <= 0:
 
@@ -541,14 +640,16 @@ def check_5m_direction(
 
     if (
         expected_direction == "LONG"
-        and current_price > open_price
+        and
+        current_price > open_price
     ):
 
         return True
 
     if (
         expected_direction == "SHORT"
-        and current_price < open_price
+        and
+        current_price < open_price
     ):
 
         return True
@@ -640,7 +741,10 @@ def check_coin(
     # 1H + 15M MUST MATCH
     # ========================================================
 
-    if direction_1h != direction_15m:
+    if (
+        direction_1h
+        != direction_15m
+    ):
 
         print(
             f"{symbol}: "
@@ -652,7 +756,7 @@ def check_coin(
     final_direction = direction_1h
 
     # ========================================================
-    # 5M
+    # 5M CONFIRMATION
     # ========================================================
 
     if not check_5m_direction(
@@ -700,11 +804,15 @@ def check_coin(
         f"{final_direction}"
     )
 
-    if send_telegram(message):
+    if send_telegram(
+        message
+    ):
 
         state[symbol] = setup_key
 
-        save_state(state)
+        save_state(
+            state
+        )
 
         print(
             f"ALERT SENT: "
@@ -757,7 +865,9 @@ def scanner_loop():
                     "Retrying in 30 seconds..."
                 )
 
-                time.sleep(30)
+                time.sleep(
+                    30
+                )
 
                 continue
 
@@ -780,7 +890,9 @@ def scanner_loop():
                     "Funding data unavailable."
                 )
 
-                time.sleep(30)
+                time.sleep(
+                    30
+                )
 
                 continue
 
@@ -800,9 +912,7 @@ def scanner_loop():
                         funding_map
                     )
 
-                except (
-                    BinanceRestrictedError
-                ):
+                except BinanceRestrictedError:
 
                     raise
 
@@ -813,7 +923,10 @@ def scanner_loop():
                         f"{e}"
                     )
 
-                time.sleep(0.10)
+                # Small delay to reduce API pressure
+                time.sleep(
+                    0.10
+                )
 
             elapsed = (
                 time.time()
@@ -857,9 +970,10 @@ def scanner_loop():
                 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
             )
 
-            # Do NOT crash Render.
-            # Keep retrying.
-            time.sleep(60)
+            # Keep Render alive
+            time.sleep(
+                60
+            )
 
         except Exception as e:
 
@@ -868,7 +982,9 @@ def scanner_loop():
                 e
             )
 
-            time.sleep(30)
+            time.sleep(
+                30
+            )
 
 
 # ============================================================
@@ -893,10 +1009,28 @@ def main():
         "Starting..."
     )
 
-    # Telegram startup notification
+    # --------------------------------------------------------
+    # START RENDER HEALTH SERVER
+    # --------------------------------------------------------
+
+    health_thread = threading.Thread(
+        target=start_health_server,
+        daemon=True
+    )
+
+    health_thread.start()
+
+    # --------------------------------------------------------
+    # TELEGRAM STARTUP NOTIFICATION
+    # --------------------------------------------------------
+
     send_telegram(
         "OI Funding Scanner Started"
     )
+
+    # --------------------------------------------------------
+    # START SCANNER
+    # --------------------------------------------------------
 
     scanner_loop()
 
