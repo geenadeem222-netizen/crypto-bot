@@ -1,4 +1,4 @@
 requests==2.31.0
 ccxt
 pandas
-pandas-ta-quant
+pandas-ta --no-build-isolation
