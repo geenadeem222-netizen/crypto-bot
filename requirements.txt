@@ -1,4 +1,4 @@
 requests==2.31.0
 ccxt
 pandas
-https://github.com/twopirllc/pandas-ta/tarball/development#egg=pandas-ta
+https://files.pythonhosted.org/packages/3c/62/790176a911765c957827e852a3928eb88172c3d5268c2278912e753443a6/pandas_ta-0.3.14b0-py3-none-any.whl
