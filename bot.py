@@ -1,3 +1,4 @@
+```python
 import requests
 import time
 import json
@@ -8,48 +9,120 @@ from datetime import datetime, timezone
 
 
 # ============================================================
-# BINANCE FUTURES OI + FUNDING SCANNER
+# BINANCE FUTURES OI + FUNDING MULTI-TIMEFRAME SCANNER
+#
+# STRATEGY
+# 1H  : OI direction == Funding direction
+# 15M : OI direction == Funding direction
+# 1H direction must equal 15M direction
+# 5M  : current candle must move in the same direction
+#
+# ONE ALERT PER 5M SETUP
+# RENDER HEALTH SERVER INCLUDED
 # ============================================================
 
-BASE_URL = "https://fapi.binance.com"
+
+# ============================================================
+# BINANCE ENDPOINTS
+# ============================================================
+
+BASE_URLS = [
+    "https://fapi.binance.com",
+    "https://fapi1.binance.com",
+    "https://fapi2.binance.com",
+    "https://fapi3.binance.com",
+]
+
+
+# ============================================================
+# SESSION
+# ============================================================
 
 SESSION = requests.Session()
 
 SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 OI-Funding-Scanner/1.0"
+    "User-Agent": "Mozilla/5.0 OI-Funding-Scanner/2.0",
+    "Accept": "application/json",
+    "Connection": "keep-alive",
 })
 
 
 # ============================================================
-# ENVIRONMENT VARIABLES
+# TELEGRAM ENVIRONMENT VARIABLES
 # ============================================================
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_BOT_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN",
+    ""
+).strip()
+
+TELEGRAM_CHAT_ID = os.getenv(
+    "TELEGRAM_CHAT_ID",
+    ""
+).strip()
 
 
 # ============================================================
 # SETTINGS
 # ============================================================
 
-SCAN_SECONDS = 30
+# Full OI scan every 5 minutes.
+# This is intentionally not 30 seconds because 500+ coins
+# can generate too many Binance API requests.
+SCAN_INTERVAL_SECONDS = 300
 
-# Wait this many seconds after a new 5M candle starts
+# Delay between OI requests.
+# Keeps Binance request rate controlled.
+REQUEST_DELAY_SECONDS = 0.15
+
+# Wait after current 5M candle starts.
 FIVE_MIN_CONFIRM_SECONDS = 15
 
-# Minimum OI movement required
+# Minimum OI movement.
+# 0.0 means any positive/negative change qualifies.
 MIN_OI_CHANGE_PERCENT = 0.0
 
+# Persistent duplicate state.
 STATE_FILE = "alert_state.json"
 
+# Cache symbols for this long.
+SYMBOL_CACHE_SECONDS = 3600
+
+# Funding data cache.
+FUNDING_CACHE_SECONDS = 60
+
+# HTTP timeout.
 REQUEST_TIMEOUT = 15
 
-MAX_RETRIES = 3
+# Number of normal request retries.
+MAX_RETRIES = 2
+
+# If Binance returns 418/429, wait this long.
+RATE_LIMIT_COOLDOWN = 120
 
 
 # ============================================================
-# BINANCE RESTRICTED ERROR
+# GLOBALS
 # ============================================================
+
+CURRENT_BASE_URL = BASE_URLS[0]
+
+SYMBOL_CACHE = []
+
+SYMBOL_CACHE_TIME = 0
+
+FUNDING_CACHE = {}
+
+FUNDING_CACHE_TIME = 0
+
+
+# ============================================================
+# CUSTOM EXCEPTION
+# ============================================================
+
+class BinanceRateLimitError(Exception):
+    pass
+
 
 class BinanceRestrictedError(Exception):
     pass
@@ -67,7 +140,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 
         self.send_header(
             "Content-Type",
-            "text/plain"
+            "text/plain; charset=utf-8"
         )
 
         self.end_headers()
@@ -82,19 +155,17 @@ class HealthHandler(BaseHTTPRequestHandler):
 
         self.send_header(
             "Content-Type",
-            "text/plain"
+            "text/plain; charset=utf-8"
         )
 
         self.end_headers()
 
     def log_message(self, format, *args):
-
         return
 
 
 def start_health_server():
 
-    # Render automatically provides PORT
     port = int(
         os.getenv("PORT", "10000")
     )
@@ -105,7 +176,8 @@ def start_health_server():
     )
 
     print(
-        f"Health server listening on port {port}"
+        f"Health server listening on port {port}",
+        flush=True
     )
 
     server.serve_forever()
@@ -115,51 +187,113 @@ def start_health_server():
 # BINANCE GET
 # ============================================================
 
-def binance_get(endpoint, params=None):
+def binance_get(endpoint, params=None, allow_failover=True):
 
-    url = BASE_URL + endpoint
+    global CURRENT_BASE_URL
 
-    for attempt in range(
-        1,
-        MAX_RETRIES + 1
-    ):
+    last_error = None
 
-        try:
+    urls_to_try = []
 
-            response = SESSION.get(
-                url,
-                params=params,
-                timeout=REQUEST_TIMEOUT
-            )
+    # Start with current working endpoint.
+    urls_to_try.append(
+        CURRENT_BASE_URL
+    )
 
-            # Binance geo restriction
-            if response.status_code == 451:
+    # Add other endpoints as failover.
+    if allow_failover:
 
-                raise BinanceRestrictedError(
-                    "Binance API returned HTTP 451. "
-                    "The server IP/location is restricted."
+        for base in BASE_URLS:
+
+            if base not in urls_to_try:
+
+                urls_to_try.append(base)
+
+    for base_url in urls_to_try:
+
+        url = base_url + endpoint
+
+        for attempt in range(
+            1,
+            MAX_RETRIES + 1
+        ):
+
+            try:
+
+                response = SESSION.get(
+                    url,
+                    params=params,
+                    timeout=REQUEST_TIMEOUT
                 )
 
-            response.raise_for_status()
+                status = response.status_code
 
-            return response.json()
+                # ------------------------------------------------
+                # RATE LIMIT / IP BAN
+                # ------------------------------------------------
 
-        except BinanceRestrictedError:
+                if status == 418:
 
-            raise
+                    raise BinanceRateLimitError(
+                        "HTTP 418 - Binance IP auto-ban/rate limit"
+                    )
 
-        except requests.RequestException as e:
+                if status == 429:
 
-            print(
-                f"Binance request failed "
-                f"(attempt {attempt}/{MAX_RETRIES}): {e}"
-            )
+                    raise BinanceRateLimitError(
+                        "HTTP 429 - Binance rate limit"
+                    )
 
-            if attempt < MAX_RETRIES:
+                # ------------------------------------------------
+                # GEO / RESTRICTED
+                # ------------------------------------------------
 
-                time.sleep(
-                    2 * attempt
+                if status == 451:
+
+                    raise BinanceRestrictedError(
+                        "HTTP 451 - Binance server/location restricted"
+                    )
+
+                response.raise_for_status()
+
+                data = response.json()
+
+                # Current endpoint worked.
+                CURRENT_BASE_URL = base_url
+
+                return data
+
+            except BinanceRateLimitError:
+
+                raise
+
+            except BinanceRestrictedError:
+
+                raise
+
+            except requests.RequestException as e:
+
+                last_error = e
+
+                print(
+                    f"Binance request failed "
+                    f"(attempt {attempt}/{MAX_RETRIES}) "
+                    f"{base_url}: {e}",
+                    flush=True
                 )
+
+                if attempt < MAX_RETRIES:
+
+                    time.sleep(
+                        2 * attempt
+                    )
+
+    if last_error:
+
+        print(
+            f"All Binance endpoints failed: {last_error}",
+            flush=True
+        )
 
     return None
 
@@ -173,7 +307,8 @@ def send_telegram(message):
     if not TELEGRAM_BOT_TOKEN:
 
         print(
-            "Telegram token is missing."
+            "Telegram token is missing.",
+            flush=True
         )
 
         return False
@@ -181,13 +316,14 @@ def send_telegram(message):
     if not TELEGRAM_CHAT_ID:
 
         print(
-            "Telegram chat ID is missing."
+            "Telegram chat ID is missing.",
+            flush=True
         )
 
         return False
 
     url = (
-        f"https://api.telegram.org/bot"
+        "https://api.telegram.org/bot"
         f"{TELEGRAM_BOT_TOKEN}/sendMessage"
     )
 
@@ -207,7 +343,8 @@ def send_telegram(message):
         if response.ok:
 
             print(
-                f"Telegram sent: {message}"
+                f"Telegram sent: {message}",
+                flush=True
             )
 
             return True
@@ -215,7 +352,8 @@ def send_telegram(message):
         print(
             "Telegram error:",
             response.status_code,
-            response.text
+            response.text,
+            flush=True
         )
 
         return False
@@ -224,7 +362,8 @@ def send_telegram(message):
 
         print(
             "Telegram connection error:",
-            e
+            e,
+            flush=True
         )
 
         return False
@@ -250,13 +389,20 @@ def load_state():
             encoding="utf-8"
         ) as f:
 
-            return json.load(f)
+            data = json.load(f)
+
+            if isinstance(data, dict):
+
+                return data
+
+            return {}
 
     except Exception as e:
 
         print(
             "State load error:",
-            e
+            e,
+            flush=True
         )
 
         return {}
@@ -286,7 +432,8 @@ def save_state(state):
 
         print(
             "State save error:",
-            e
+            e,
+            flush=True
         )
 
 
@@ -295,6 +442,21 @@ def save_state(state):
 # ============================================================
 
 def get_symbols():
+
+    global SYMBOL_CACHE
+    global SYMBOL_CACHE_TIME
+
+    now = time.time()
+
+    # Use cache.
+    if (
+        SYMBOL_CACHE
+        and
+        now - SYMBOL_CACHE_TIME
+        < SYMBOL_CACHE_SECONDS
+    ):
+
+        return SYMBOL_CACHE
 
     data = binance_get(
         "/fapi/v1/exchangeInfo"
@@ -319,9 +481,21 @@ def get_symbols():
             item.get("status") == "TRADING"
         ):
 
-            symbols.append(
-                item["symbol"]
+            symbol = item.get(
+                "symbol"
             )
+
+            if symbol:
+
+                symbols.append(
+                    symbol
+                )
+
+    if symbols:
+
+        SYMBOL_CACHE = symbols
+
+        SYMBOL_CACHE_TIME = now
 
     return symbols
 
@@ -331,6 +505,21 @@ def get_symbols():
 # ============================================================
 
 def get_all_funding():
+
+    global FUNDING_CACHE
+    global FUNDING_CACHE_TIME
+
+    now = time.time()
+
+    # Use short cache.
+    if (
+        FUNDING_CACHE
+        and
+        now - FUNDING_CACHE_TIME
+        < FUNDING_CACHE_SECONDS
+    ):
+
+        return FUNDING_CACHE
 
     data = binance_get(
         "/fapi/v1/premiumIndex"
@@ -352,6 +541,10 @@ def get_all_funding():
             "lastFundingRate"
         )
 
+        if not symbol:
+
+            continue
+
         try:
 
             funding[symbol] = float(
@@ -364,6 +557,12 @@ def get_all_funding():
         ):
 
             continue
+
+    if funding:
+
+        FUNDING_CACHE = funding
+
+        FUNDING_CACHE_TIME = now
 
     return funding
 
@@ -471,11 +670,6 @@ def get_oi_direction(
         / old_oi
     ) * 100
 
-    print(
-        f"{symbol} {period} OI: "
-        f"{change_percent:+.4f}%"
-    )
-
     if (
         change_percent
         > MIN_OI_CHANGE_PERCENT
@@ -523,7 +717,7 @@ def get_timeframe_direction(
 
         return None
 
-    # OI and funding must agree
+    # OI and Funding must agree.
     if (
         oi_direction
         != funding_direction
@@ -608,7 +802,7 @@ def check_5m_direction(
         - candle["open_time"]
     ) / 1000
 
-    # Wait for confirmation
+    # Wait after new candle starts.
     if (
         seconds_from_open
         < FIVE_MIN_CONFIRM_SECONDS
@@ -627,16 +821,6 @@ def check_5m_direction(
     if open_price <= 0:
 
         return False
-
-    change_percent = (
-        (current_price - open_price)
-        / open_price
-    ) * 100
-
-    print(
-        f"{symbol} 5M: "
-        f"{change_percent:+.4f}%"
-    )
 
     if (
         expected_direction == "LONG"
@@ -691,13 +875,9 @@ def check_coin(
     funding_map
 ):
 
-    print(
-        f"\nChecking {symbol}"
-    )
-
-    # ========================================================
+    # --------------------------------------------------------
     # 1H
-    # ========================================================
+    # --------------------------------------------------------
 
     direction_1h = (
         get_timeframe_direction(
@@ -712,13 +892,13 @@ def check_coin(
         return
 
     print(
-        f"{symbol} 1H = "
-        f"{direction_1h}"
+        f"{symbol} 1H = {direction_1h}",
+        flush=True
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # 15M
-    # ========================================================
+    # --------------------------------------------------------
 
     direction_15m = (
         get_timeframe_direction(
@@ -733,31 +913,26 @@ def check_coin(
         return
 
     print(
-        f"{symbol} 15M = "
-        f"{direction_15m}"
+        f"{symbol} 15M = {direction_15m}",
+        flush=True
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # 1H + 15M MUST MATCH
-    # ========================================================
+    # --------------------------------------------------------
 
     if (
         direction_1h
         != direction_15m
     ):
 
-        print(
-            f"{symbol}: "
-            f"1H/15M mismatch"
-        )
-
         return
 
     final_direction = direction_1h
 
-    # ========================================================
+    # --------------------------------------------------------
     # 5M CONFIRMATION
-    # ========================================================
+    # --------------------------------------------------------
 
     if not check_5m_direction(
         symbol,
@@ -766,9 +941,9 @@ def check_coin(
 
         return
 
-    # ========================================================
+    # --------------------------------------------------------
     # SETUP KEY
-    # ========================================================
+    # --------------------------------------------------------
 
     setup_key = make_setup_key(
         symbol,
@@ -779,25 +954,20 @@ def check_coin(
 
         return
 
-    # ========================================================
+    # --------------------------------------------------------
     # DUPLICATE CHECK
-    # ========================================================
+    # --------------------------------------------------------
 
     if (
         state.get(symbol)
         == setup_key
     ):
 
-        print(
-            f"{symbol}: "
-            f"Already alerted"
-        )
-
         return
 
-    # ========================================================
+    # --------------------------------------------------------
     # ALERT
-    # ========================================================
+    # --------------------------------------------------------
 
     message = (
         f"{symbol} "
@@ -815,9 +985,151 @@ def check_coin(
         )
 
         print(
-            f"ALERT SENT: "
-            f"{message}"
+            f"ALERT SENT: {message}",
+            flush=True
         )
+
+
+# ============================================================
+# SCAN ONCE
+# ============================================================
+
+def run_scan(state):
+
+    print(
+        "\n======================================",
+        flush=True
+    )
+
+    print(
+        "NEW SCAN:",
+        datetime.now(
+            timezone.utc
+        ).strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        ),
+        flush=True
+    )
+
+    print(
+        "======================================",
+        flush=True
+    )
+
+    # --------------------------------------------------------
+    # SYMBOLS
+    # --------------------------------------------------------
+
+    symbols = get_symbols()
+
+    if not symbols:
+
+        print(
+            "No symbols received.",
+            flush=True
+        )
+
+        return False
+
+    print(
+        f"USDT PERPETUALS: {len(symbols)}",
+        flush=True
+    )
+
+    # --------------------------------------------------------
+    # FUNDING
+    # --------------------------------------------------------
+
+    funding_map = get_all_funding()
+
+    if not funding_map:
+
+        print(
+            "Funding data unavailable.",
+            flush=True
+        )
+
+        return False
+
+    print(
+        f"Funding symbols: {len(funding_map)}",
+        flush=True
+    )
+
+    # --------------------------------------------------------
+    # SCAN
+    # --------------------------------------------------------
+
+    scan_start = time.time()
+
+    checked = 0
+
+    for symbol in symbols:
+
+        try:
+
+            check_coin(
+                symbol,
+                state,
+                funding_map
+            )
+
+            checked += 1
+
+        except BinanceRateLimitError:
+
+            print(
+                "\nBINANCE RATE LIMIT / IP BAN",
+                flush=True
+            )
+
+            print(
+                f"Cooling down for "
+                f"{RATE_LIMIT_COOLDOWN} seconds...",
+                flush=True
+            )
+
+            time.sleep(
+                RATE_LIMIT_COOLDOWN
+            )
+
+            return False
+
+        except BinanceRestrictedError as e:
+
+            print(
+                "BINANCE RESTRICTED:",
+                str(e),
+                flush=True
+            )
+
+            return False
+
+        except Exception as e:
+
+            print(
+                f"{symbol} ERROR: {e}",
+                flush=True
+            )
+
+        # Controlled request rate.
+        time.sleep(
+            REQUEST_DELAY_SECONDS
+        )
+
+    elapsed = (
+        time.time()
+        - scan_start
+    )
+
+    print(
+        f"Scan completed: "
+        f"{checked}/{len(symbols)} coins "
+        f"in {elapsed:.1f}s",
+        flush=True
+    )
+
+    return True
 
 
 # ============================================================
@@ -828,163 +1140,77 @@ def scanner_loop():
 
     state = load_state()
 
+    print(
+        "Scanner loop started.",
+        flush=True
+    )
+
     while True:
+
+        cycle_start = time.time()
 
         try:
 
-            print(
-                "\n======================================"
+            run_scan(
+                state
             )
 
-            print(
-                "NEW SCAN:",
-                datetime.now(
-                    timezone.utc
-                ).strftime(
-                    "%Y-%m-%d %H:%M:%S UTC"
-                )
-            )
+        except BinanceRateLimitError as e:
 
             print(
-                "======================================"
-            )
-
-            # ------------------------------------------------
-            # GET SYMBOLS
-            # ------------------------------------------------
-
-            symbols = get_symbols()
-
-            if not symbols:
-
-                print(
-                    "No symbols received."
-                )
-
-                print(
-                    "Retrying in 30 seconds..."
-                )
-
-                time.sleep(
-                    30
-                )
-
-                continue
-
-            print(
-                f"USDT PERPETUALS: "
-                f"{len(symbols)}"
-            )
-
-            # ------------------------------------------------
-            # GET FUNDING ONCE
-            # ------------------------------------------------
-
-            funding_map = (
-                get_all_funding()
-            )
-
-            if not funding_map:
-
-                print(
-                    "Funding data unavailable."
-                )
-
-                time.sleep(
-                    30
-                )
-
-                continue
-
-            # ------------------------------------------------
-            # SCAN COINS
-            # ------------------------------------------------
-
-            scan_start = time.time()
-
-            for symbol in symbols:
-
-                try:
-
-                    check_coin(
-                        symbol,
-                        state,
-                        funding_map
-                    )
-
-                except BinanceRestrictedError:
-
-                    raise
-
-                except Exception as e:
-
-                    print(
-                        f"{symbol} ERROR: "
-                        f"{e}"
-                    )
-
-                # Small delay to reduce API pressure
-                time.sleep(
-                    0.10
-                )
-
-            elapsed = (
-                time.time()
-                - scan_start
-            )
-
-            wait_time = max(
-                1,
-                SCAN_SECONDS - elapsed
-            )
-
-            print(
-                f"\nScan completed: "
-                f"{elapsed:.1f}s"
-            )
-
-            print(
-                f"Next scan: "
-                f"{wait_time:.1f}s"
+                "Binance rate limit:",
+                e,
+                flush=True
             )
 
             time.sleep(
-                wait_time
+                RATE_LIMIT_COOLDOWN
             )
 
         except BinanceRestrictedError as e:
 
             print(
-                "\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+                "Binance restricted:",
+                e,
+                flush=True
             )
 
-            print(
-                "BINANCE HTTP 451"
-            )
-
-            print(
-                str(e)
-            )
-
-            print(
-                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
-            )
-
-            # Keep Render alive
             time.sleep(
-                60
+                RATE_LIMIT_COOLDOWN
             )
 
         except Exception as e:
 
             print(
                 "SCANNER ERROR:",
-                e
+                e,
+                flush=True
             )
 
             time.sleep(
                 30
             )
+
+        elapsed = (
+            time.time()
+            - cycle_start
+        )
+
+        wait_time = max(
+            1,
+            SCAN_INTERVAL_SECONDS
+            - elapsed
+        )
+
+        print(
+            f"Next full scan in "
+            f"{wait_time:.1f}s",
+            flush=True
+        )
+
+        time.sleep(
+            wait_time
+        )
 
 
 # ============================================================
@@ -994,23 +1220,42 @@ def scanner_loop():
 def main():
 
     print(
-        "\n======================================"
+        "\n======================================",
+        flush=True
     )
 
     print(
-        "BINANCE FUTURES OI + FUNDING SCANNER"
+        "BINANCE FUTURES OI + FUNDING SCANNER",
+        flush=True
     )
 
     print(
-        "======================================"
+        "1H OI + FUNDING",
+        flush=True
     )
 
     print(
-        "Starting..."
+        "15M OI + FUNDING",
+        flush=True
+    )
+
+    print(
+        "5M PRICE CONFIRMATION",
+        flush=True
+    )
+
+    print(
+        "======================================",
+        flush=True
+    )
+
+    print(
+        "Starting...",
+        flush=True
     )
 
     # --------------------------------------------------------
-    # START RENDER HEALTH SERVER
+    # RENDER HEALTH SERVER
     # --------------------------------------------------------
 
     health_thread = threading.Thread(
@@ -1021,12 +1266,24 @@ def main():
     health_thread.start()
 
     # --------------------------------------------------------
-    # TELEGRAM STARTUP NOTIFICATION
+    # TELEGRAM STARTUP
     # --------------------------------------------------------
 
-    send_telegram(
+    if send_telegram(
         "OI Funding Scanner Started"
-    )
+    ):
+
+        print(
+            "Telegram startup notification sent.",
+            flush=True
+        )
+
+    else:
+
+        print(
+            "Telegram startup notification FAILED.",
+            flush=True
+        )
 
     # --------------------------------------------------------
     # START SCANNER
@@ -1042,3 +1299,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+```
