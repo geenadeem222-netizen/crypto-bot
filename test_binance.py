@@ -1,4 +1,3 @@
-```python
 import requests
 import os
 
@@ -40,4 +39,4 @@ for url in urls:
         )
 
 print("\nTEST FINISHED", flush=True)
-```
+
