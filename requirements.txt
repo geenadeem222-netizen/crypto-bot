@@ -1,4 +1,4 @@
 requests==2.31.0
 ccxt
 pandas
-pandas-ta==0.3.14b0
+https://github.com
