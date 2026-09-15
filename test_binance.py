@@ -1,42 +1,61 @@
-import requests
 import os
+import json
+import asyncio
+import websockets
 
-print("BINANCE CONNECTION TEST", flush=True)
+API_KEY = os.getenv("BINANCE_API_KEY")
+API_SECRET = os.getenv("BINANCE_API_SECRET")
 
-urls = [
-    "https://fapi.binance.com/fapi/v1/time",
-    "https://fapi1.binance.com/fapi/v1/time",
-    "https://fapi2.binance.com/fapi/v1/time",
-    "https://fapi3.binance.com/fapi/v1/time",
-]
+print("====================================")
+print("BINANCE WEBSOCKET CONNECTION TEST")
+print("====================================")
 
-for url in urls:
+if API_KEY:
+    print("BINANCE_API_KEY: FOUND")
+else:
+    print("BINANCE_API_KEY: NOT FOUND")
+
+if API_SECRET:
+    print("BINANCE_API_SECRET: FOUND")
+else:
+    print("BINANCE_API_SECRET: NOT FOUND")
+
+
+async def test_websocket():
+    url = "wss://fstream.binance.com/ws/btcusdt@markPrice"
+
+    print("\nConnecting to Binance Futures WebSocket...")
+    print(url)
+
     try:
-        print(f"\nTesting: {url}", flush=True)
-
-        r = requests.get(
+        async with websockets.connect(
             url,
-            headers={
-                "User-Agent": "Mozilla/5.0"
-            },
-            timeout=15
-        )
+            ping_interval=20,
+            ping_timeout=20,
+            close_timeout=10
+        ) as ws:
 
-        print(
-            f"STATUS: {r.status_code}",
-            flush=True
-        )
+            print("WEBSOCKET CONNECTED SUCCESSFULLY!")
 
-        print(
-            f"RESPONSE: {r.text[:500]}",
-            flush=True
-        )
+            message = await asyncio.wait_for(ws.recv(), timeout=15)
+
+            data = json.loads(message)
+
+            print("\nLIVE BINANCE DATA RECEIVED:")
+            print("Symbol:", data.get("s"))
+            print("Mark Price:", data.get("p"))
+            print("Funding Rate:", data.get("r"))
+            print("Event Time:", data.get("E"))
+
+            print("\n====================================")
+            print("BINANCE WEBSOCKET TEST: SUCCESS")
+            print("====================================")
 
     except Exception as e:
-        print(
-            f"ERROR: {e}",
-            flush=True
-        )
+        print("\n====================================")
+        print("BINANCE WEBSOCKET TEST: FAILED")
+        print("ERROR:", repr(e))
+        print("====================================")
 
-print("\nTEST FINISHED", flush=True)
 
+asyncio.run(test_websocket())
