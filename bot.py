@@ -9,14 +9,6 @@ import requests
 
 
 # ============================================================
-# OI + FUNDING FUTURES SCANNER
-# 1H OI + 15M OI
-# FUNDING DIRECTION
-# NO 5M
-# ============================================================
-
-
-# ============================================================
 # CONFIG
 # ============================================================
 
@@ -25,24 +17,21 @@ PIPAI_BASE = "https://api-dev.pipai.org"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# Scan every 15 minutes AFTER previous scan finishes.
 SCAN_INTERVAL = 15 * 60
-
 REQUEST_TIMEOUT = 20
 
-# Small delay between OI requests.
-# PIPAI gateway allows up to 1000 requests/min.
+# PIPAI gateway safety delay
 REQUEST_DELAY = 0.075
 
-# No volume filter.
+# No volume restriction
 MIN_24H_VOLUME = 0
 
-# Safety limit.
+# Maximum symbols per scan
 MAX_SYMBOLS = 400
 
 
 # ============================================================
-# FORCE PYTHON OUTPUT TO RENDER LOGS
+# FORCE LIVE RENDER LOGS
 # ============================================================
 
 try:
@@ -63,11 +52,11 @@ def log(message=""):
 def send_telegram(message):
 
     if not TELEGRAM_BOT_TOKEN:
-        log("TELEGRAM ERROR: TELEGRAM_BOT_TOKEN is missing.")
+        log("TELEGRAM ERROR: BOT TOKEN MISSING")
         return False
 
     if not TELEGRAM_CHAT_ID:
-        log("TELEGRAM ERROR: TELEGRAM_CHAT_ID is missing.")
+        log("TELEGRAM ERROR: CHAT ID MISSING")
         return False
 
     url = (
@@ -75,16 +64,14 @@ def send_telegram(message):
         f"{TELEGRAM_BOT_TOKEN}/sendMessage"
     )
 
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message
-    }
-
     try:
 
         response = requests.post(
             url,
-            json=payload,
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message
+            },
             timeout=15
         )
 
@@ -97,7 +84,7 @@ def send_telegram(message):
             return True
 
         log(
-            f"TELEGRAM ERROR HTTP "
+            f"TELEGRAM ERROR "
             f"{response.status_code}: "
             f"{response.text[:500]}"
         )
@@ -153,8 +140,7 @@ def start_health_server():
         )
 
         log(
-            f"HEALTH SERVER STARTED "
-            f"ON PORT {port}"
+            f"HEALTH SERVER STARTED ON PORT {port}"
         )
 
         server.serve_forever()
@@ -162,8 +148,7 @@ def start_health_server():
     except Exception as e:
 
         log(
-            f"HEALTH SERVER ERROR: "
-            f"{repr(e)}"
+            f"HEALTH SERVER ERROR: {repr(e)}"
         )
 
 
@@ -174,12 +159,13 @@ def start_health_server():
 session = requests.Session()
 
 session.headers.update({
-    "User-Agent": "OI-Funding-Scanner/2.0"
+    "User-Agent": "OI-Funding-Scanner/3.0",
+    "Accept": "application/json"
 })
 
 
 # ============================================================
-# PIPAI GET
+# PIPAI REQUEST
 # ============================================================
 
 def pipai_get(path, params=None):
@@ -188,11 +174,6 @@ def pipai_get(path, params=None):
 
     try:
 
-        log(
-            f"API REQUEST: {path} "
-            f"{params if params else ''}"
-        )
-
         response = session.get(
             url,
             params=params,
@@ -200,33 +181,27 @@ def pipai_get(path, params=None):
         )
 
         log(
-            f"API RESPONSE: "
-            f"{response.status_code} "
-            f"{path}"
+            f"API {response.status_code}: "
+            f"{path} "
+            f"{params if params else ''}"
         )
 
         if response.status_code != 200:
 
             log(
-                f"API ERROR BODY: "
-                f"{response.text[:500]}"
+                f"API ERROR: "
+                f"{response.text[:300]}"
             )
 
             return None
 
         try:
-
             return response.json()
 
         except Exception:
 
             log(
-                f"JSON ERROR: "
-                f"{path}"
-            )
-
-            log(
-                response.text[:500]
+                f"JSON PARSE ERROR: {path}"
             )
 
             return None
@@ -234,15 +209,88 @@ def pipai_get(path, params=None):
     except Exception as e:
 
         log(
-            f"PIPAI REQUEST EXCEPTION: "
-            f"{path} | {repr(e)}"
+            f"REQUEST ERROR {path}: "
+            f"{repr(e)}"
         )
 
         return None
 
 
 # ============================================================
-# GET FUTURES SYMBOLS
+# SYMBOL NORMALIZER
+# ============================================================
+
+def normalize_symbol(value):
+
+    if value is None:
+        return ""
+
+    symbol = str(value).upper().strip()
+
+    # Remove common separators
+    symbol = symbol.replace(
+        "/",
+        ""
+    )
+
+    symbol = symbol.replace(
+        "-",
+        ""
+    )
+
+    symbol = symbol.replace(
+        ":",
+        ""
+    )
+
+    return symbol
+
+
+# ============================================================
+# EXTRACT FUNDING RATE
+# ============================================================
+
+def extract_funding_rate(item):
+
+    if not isinstance(item, dict):
+        return None
+
+    # Possible field names returned by different gateways.
+    fields = [
+        "fundingRate",
+        "funding_rate",
+        "lastFundingRate",
+        "lastFundingRateValue",
+        "rate",
+        "funding"
+    ]
+
+    for field in fields:
+
+        value = item.get(field)
+
+        if value is None:
+            continue
+
+        # Ignore empty strings
+        if value == "":
+            continue
+
+        try:
+
+            rate = float(value)
+
+            return rate
+
+        except Exception:
+
+            continue
+
+    return None
+
+
+# ============================================================
+# GET SYMBOLS
 # ============================================================
 
 def get_symbols():
@@ -256,33 +304,14 @@ def get_symbols():
         "/ticker/24hr/active"
     )
 
-    # --------------------------------------------------------
-    # Primary source
-    # --------------------------------------------------------
-
-    if isinstance(data, list):
-
-        log(
-            f"ACTIVE TICKER ITEMS: "
-            f"{len(data)}"
-        )
-
-    else:
-
-        log(
-            "ACTIVE TICKER RESPONSE "
-            "IS NOT A LIST."
-        )
-
-    # --------------------------------------------------------
-    # Fallback to funding list
-    # --------------------------------------------------------
-
     if not isinstance(data, list):
 
         log(
-            "USING FUNDING LIST "
-            "AS SYMBOL FALLBACK..."
+            "ACTIVE TICKER NOT USABLE."
+        )
+
+        log(
+            "USING FUNDING LIST FOR SYMBOLS..."
         )
 
         data = pipai_get(
@@ -292,61 +321,55 @@ def get_symbols():
     if not isinstance(data, list):
 
         log(
-            "ERROR: COULD NOT GET "
-            "FUTURES SYMBOLS."
+            "ERROR: NO SYMBOL LIST"
         )
 
         return []
 
-    symbols = []
+    unique = {}
 
     for item in data:
 
         if not isinstance(item, dict):
             continue
 
-        symbol = str(
-            item.get(
-                "symbol",
-                ""
-            )
-        ).upper().strip()
+        raw_symbol = (
+            item.get("symbol")
+            or item.get("s")
+        )
+
+        symbol = normalize_symbol(
+            raw_symbol
+        )
 
         if not symbol.endswith("USDT"):
             continue
 
-        # Skip delivery-style symbols.
+        # Ignore delivery contracts
         if "_" in symbol:
             continue
 
-        # Volume.
+        # Ignore obviously invalid names
+        if len(symbol) < 6:
+            continue
+
         volume = (
             item.get("quoteVolume")
             or item.get("volume24h")
             or item.get("quote_volume")
+            or item.get("quoteVol")
             or 0
         )
 
         try:
             volume = float(volume)
-
         except Exception:
-            volume = 0
+            volume = 0.0
 
         if volume < MIN_24H_VOLUME:
             continue
 
-        symbols.append(
-            (symbol, volume)
-        )
-
-    # Remove duplicates.
-    unique = {}
-
-    for symbol, volume in symbols:
-
-        if symbol not in unique:
-            unique[symbol] = volume
+        unique[symbol] = volume
 
     result = sorted(
         unique.items(),
@@ -369,7 +392,7 @@ def get_symbols():
     if symbols:
 
         log(
-            "FIRST SYMBOLS: "
+            "SYMBOL SAMPLE: "
             + ", ".join(symbols[:20])
         )
 
@@ -377,14 +400,14 @@ def get_symbols():
 
 
 # ============================================================
-# GET ALL CURRENT FUNDING
+# GET ALL FUNDING
 # ============================================================
 
 def get_all_funding():
 
     log("")
     log("==========================================")
-    log("GETTING CURRENT FUNDING RATES")
+    log("GETTING FUNDING RATES")
     log("==========================================")
 
     data = pipai_get(
@@ -394,54 +417,182 @@ def get_all_funding():
     if not isinstance(data, list):
 
         log(
-            "ERROR: FUNDING RESPONSE "
-            "IS INVALID."
+            "FUNDING LIST INVALID"
         )
 
         return {}
 
     funding = {}
 
+    positive = 0
+    negative = 0
+    zero = 0
+
     for item in data:
 
         if not isinstance(item, dict):
             continue
 
-        symbol = str(
-            item.get(
-                "symbol",
-                ""
-            )
-        ).upper().strip()
+        raw_symbol = (
+            item.get("symbol")
+            or item.get("s")
+        )
+
+        symbol = normalize_symbol(
+            raw_symbol
+        )
 
         if not symbol.endswith("USDT"):
             continue
 
-        try:
+        rate = extract_funding_rate(
+            item
+        )
 
-            rate = float(
-                item.get(
-                    "fundingRate",
-                    0
-                )
-            )
-
-        except Exception:
-
+        if rate is None:
             continue
 
         funding[symbol] = rate
 
+        if rate > 0:
+            positive += 1
+
+        elif rate < 0:
+            negative += 1
+
+        else:
+            zero += 1
+
     log(
-        f"FUNDING RATES RECEIVED: "
+        f"FUNDING RECEIVED: "
         f"{len(funding)}"
     )
+
+    log(
+        f"POSITIVE: {positive} | "
+        f"NEGATIVE: {negative} | "
+        f"ZERO: {zero}"
+    )
+
+    # Show real examples
+    shown = 0
+
+    for symbol, rate in funding.items():
+
+        if rate != 0:
+
+            log(
+                f"FUNDING SAMPLE: "
+                f"{symbol} = {rate:.10f}"
+            )
+
+            shown += 1
+
+            if shown >= 10:
+                break
+
+    if positive == 0 and negative == 0:
+
+        log(
+            "WARNING: ALL FUNDING VALUES "
+            "ARE ZERO."
+        )
+
+        log(
+            "PER-SYMBOL FUNDING FALLBACK "
+            "WILL BE USED."
+        )
 
     return funding
 
 
 # ============================================================
-# GET OI DIRECTION
+# PER SYMBOL FUNDING FALLBACK
+# ============================================================
+
+def get_symbol_funding(symbol):
+
+    # Historical funding endpoint.
+    data = pipai_get(
+        f"/funding/rates/{symbol}/history"
+    )
+
+    if not isinstance(data, list):
+        return None
+
+    if not data:
+        return None
+
+    # Usually newest item is last.
+    candidates = reversed(data)
+
+    for item in candidates:
+
+        rate = extract_funding_rate(
+            item
+        )
+
+        if rate is not None:
+
+            return rate
+
+    return None
+
+
+# ============================================================
+# GET FINAL FUNDING
+# ============================================================
+
+def get_funding_for_symbol(
+    symbol,
+    funding_map
+):
+
+    # First use all-funding response.
+    if symbol in funding_map:
+
+        rate = funding_map[symbol]
+
+        # If it is non-zero, use it immediately.
+        if rate != 0:
+
+            return rate
+
+    # If missing/zero, verify directly.
+    log(
+        f"{symbol}: "
+        f"CHECKING INDIVIDUAL FUNDING"
+    )
+
+    time.sleep(
+        REQUEST_DELAY
+    )
+
+    rate = get_symbol_funding(
+        symbol
+    )
+
+    if rate is not None:
+
+        log(
+            f"{symbol}: "
+            f"INDIVIDUAL FUNDING = "
+            f"{rate:.10f}"
+        )
+
+        return rate
+
+    # If individual endpoint fails,
+    # return the original value if available.
+    if symbol in funding_map:
+
+        return funding_map[symbol]
+
+    return None
+
+
+# ============================================================
+# OPEN INTEREST DIRECTION
 # ============================================================
 
 def get_oi_direction(
@@ -459,21 +610,9 @@ def get_oi_direction(
     )
 
     if not isinstance(data, list):
-
-        log(
-            f"{symbol} {period} OI: "
-            f"NO DATA"
-        )
-
         return None
 
     if len(data) < 2:
-
-        log(
-            f"{symbol} {period} OI: "
-            f"LESS THAN 2 DATA POINTS"
-        )
-
         return None
 
     try:
@@ -489,7 +628,7 @@ def get_oi_direction(
     except Exception as e:
 
         log(
-            f"{symbol} {period} OI PARSE ERROR: "
+            f"{symbol} {period} OI ERROR: "
             f"{repr(e)}"
         )
 
@@ -498,8 +637,7 @@ def get_oi_direction(
     if current > previous:
 
         log(
-            f"{symbol} {period} OI: "
-            f"UP "
+            f"{symbol} {period} OI UP "
             f"({previous} -> {current})"
         )
 
@@ -508,59 +646,52 @@ def get_oi_direction(
     if current < previous:
 
         log(
-            f"{symbol} {period} OI: "
-            f"DOWN "
+            f"{symbol} {period} OI DOWN "
             f"({previous} -> {current})"
         )
 
         return "DOWN"
 
     log(
-        f"{symbol} {period} OI: FLAT"
+        f"{symbol} {period} OI FLAT"
     )
 
     return "FLAT"
 
 
 # ============================================================
-# DETERMINE LONG / SHORT
+# DIRECTION
 # ============================================================
 
 def determine_direction(
     oi_direction,
-    funding_rate
+    funding
 ):
-
-    # User strategy:
-    #
-    # OI UP + positive funding = LONG
-    # OI UP + negative funding = SHORT
-    #
-    # OI DOWN / FLAT = NO SIGNAL.
 
     if oi_direction != "UP":
         return None
 
-    if funding_rate > 0:
+    if funding > 0:
         return "LONG"
 
-    if funding_rate < 0:
+    if funding < 0:
         return "SHORT"
 
     return None
 
 
 # ============================================================
-# ANALYZE ONE SYMBOL
+# ANALYZE SYMBOL
 # ============================================================
 
 def analyze_symbol(
     symbol,
-    funding_rates
+    funding_map
 ):
 
-    funding = funding_rates.get(
-        symbol
+    funding = get_funding_for_symbol(
+        symbol,
+        funding_map
     )
 
     if funding is None:
@@ -574,13 +705,10 @@ def analyze_symbol(
 
     log("")
     log(
-        f"----- ANALYZING {symbol} -----"
+        f"----- {symbol} -----"
     )
 
-    # --------------------------------------------------------
-    # 1H OI
-    # --------------------------------------------------------
-
+    # 1H
     oi_1h = get_oi_direction(
         symbol,
         "1h"
@@ -590,10 +718,7 @@ def analyze_symbol(
         REQUEST_DELAY
     )
 
-    # --------------------------------------------------------
-    # 15M OI
-    # --------------------------------------------------------
-
+    # 15M
     oi_15m = get_oi_direction(
         symbol,
         "15m"
@@ -609,10 +734,6 @@ def analyze_symbol(
     if oi_15m is None:
         return None
 
-    # --------------------------------------------------------
-    # Direction
-    # --------------------------------------------------------
-
     direction_1h = determine_direction(
         oi_1h,
         funding
@@ -625,39 +746,36 @@ def analyze_symbol(
 
     log(
         f"{symbol} | "
-        f"Funding={funding:.8f} | "
+        f"Funding={funding:.10f} | "
         f"1H={direction_1h} | "
         f"15M={direction_15m}"
     )
 
-    # Both must have a direction.
+    # Both directions required
     if direction_1h is None:
         return None
 
     if direction_15m is None:
         return None
 
-    # Directions MUST match.
+    # Must match
     if direction_1h != direction_15m:
 
         log(
             f"{symbol}: "
-            f"DIRECTIONS DO NOT MATCH"
+            f"DIRECTION MISMATCH"
         )
 
         return None
 
-    # --------------------------------------------------------
-    # CONFIRMED SIGNAL
-    # --------------------------------------------------------
-
+    # Confirmed
     log("")
     log(
         "****************************************"
     )
 
     log(
-        f"CONFIRMED SIGNAL: "
+        f"CONFIRMED: "
         f"{symbol} {direction_1h}"
     )
 
@@ -668,21 +786,22 @@ def analyze_symbol(
     return {
         "symbol": symbol,
         "direction": direction_1h,
-        "funding": funding,
-        "oi_1h": oi_1h,
-        "oi_15m": oi_15m
+        "funding": funding
     }
 
 
 # ============================================================
-# RUN SCAN
+# SCAN
 # ============================================================
 
 def run_scan():
 
     log("")
     log("")
-    log("============================================================")
+    log(
+        "============================================================"
+    )
+
     log(
         "NEW SCAN: "
         + datetime.now(
@@ -691,41 +810,22 @@ def run_scan():
             "%Y-%m-%d %H:%M:%S UTC"
         )
     )
-    log("============================================================")
 
-    # --------------------------------------------------------
-    # Symbols
-    # --------------------------------------------------------
+    log(
+        "============================================================"
+    )
 
     symbols = get_symbols()
 
     if not symbols:
 
         log(
-            "SCAN STOPPED: "
             "NO SYMBOLS FOUND."
         )
 
         return []
 
-    # --------------------------------------------------------
-    # Funding
-    # --------------------------------------------------------
-
-    funding_rates = get_all_funding()
-
-    if not funding_rates:
-
-        log(
-            "SCAN STOPPED: "
-            "NO FUNDING DATA."
-        )
-
-        return []
-
-    # --------------------------------------------------------
-    # Analyze
-    # --------------------------------------------------------
+    funding_map = get_all_funding()
 
     signals = []
 
@@ -733,10 +833,8 @@ def run_scan():
 
     log("")
     log(
-        f"STARTING SYMBOL ANALYSIS: "
-        f"{total} SYMBOLS"
+        f"STARTING {total} SYMBOL SCAN"
     )
-    log("")
 
     for index, symbol in enumerate(
         symbols,
@@ -752,7 +850,7 @@ def run_scan():
 
             result = analyze_symbol(
                 symbol,
-                funding_rates
+                funding_map
             )
 
             if result:
@@ -764,43 +862,30 @@ def run_scan():
         except Exception as e:
 
             log(
-                f"{symbol} ANALYSIS ERROR: "
+                f"{symbol} ERROR: "
                 f"{repr(e)}"
             )
 
-    # --------------------------------------------------------
-    # Scan complete
-    # --------------------------------------------------------
-
     log("")
-    log("============================================================")
+    log(
+        "============================================================"
+    )
+
     log(
         f"SCAN COMPLETE | "
         f"SIGNALS FOUND: {len(signals)}"
     )
-    log("============================================================")
+
+    log(
+        "============================================================"
+    )
 
     return signals
 
 
 # ============================================================
-# ALERT DEDUPLICATION
+# ALERT MEMORY
 # ============================================================
-
-# Example:
-#
-# BTCUSDT LONG
-# BTCUSDT LONG
-# BTCUSDT LONG
-#
-# Only first LONG alert.
-#
-# If later:
-#
-# BTCUSDT SHORT
-#
-# SHORT alert will be sent.
-
 
 last_alerted_direction = {}
 
@@ -812,7 +897,7 @@ def send_new_signals(
     if not signals:
 
         log(
-            "NO NEW SIGNALS TO SEND."
+            "NO NEW SIGNALS."
         )
 
         return
@@ -833,13 +918,11 @@ def send_new_signals(
             )
         )
 
-        # Same direction already alerted.
         if previous == direction:
 
             log(
-                f"ALERT SKIPPED: "
-                f"{symbol} {direction} "
-                f"(already alerted)"
+                f"SKIP DUPLICATE: "
+                f"{symbol} {direction}"
             )
 
             continue
@@ -848,16 +931,9 @@ def send_new_signals(
             f"{symbol} {direction}"
         )
 
-        log(
-            f"SENDING ALERT: "
-            f"{message}"
-        )
-
-        sent = send_telegram(
+        if send_telegram(
             message
-        )
-
-        if sent:
+        ):
 
             last_alerted_direction[
                 symbol
@@ -871,22 +947,12 @@ def send_new_signals(
 def scanner_loop():
 
     log("")
-    log("============================================================")
-    log("OI + FUNDING SCANNER STARTING")
-    log("============================================================")
-
     log(
-        f"PIPAI BASE: {PIPAI_BASE}"
+        "============================================================"
     )
 
     log(
-        f"SCAN INTERVAL: "
-        f"{SCAN_INTERVAL // 60} MINUTES"
-    )
-
-    log(
-        f"MAX SYMBOLS: "
-        f"{MAX_SYMBOLS}"
+        "OI + FUNDING SCANNER STARTING"
     )
 
     log(
@@ -897,27 +963,14 @@ def scanner_loop():
         "5M: DISABLED"
     )
 
-    log("")
-
-    # --------------------------------------------------------
-    # Startup Telegram
-    # --------------------------------------------------------
-
     log(
-        "SENDING STARTUP TELEGRAM..."
+        "============================================================"
     )
 
+    # Startup alert
     send_telegram(
         "OI Funding Scanner Started"
     )
-
-    log(
-        "STARTUP COMPLETE."
-    )
-
-    # --------------------------------------------------------
-    # Immediate first scan
-    # --------------------------------------------------------
 
     first_scan = True
 
@@ -929,9 +982,7 @@ def scanner_loop():
 
                 log("")
                 log(
-                    f"WAITING "
-                    f"{SCAN_INTERVAL // 60} "
-                    f"MINUTES FOR NEXT SCAN..."
+                    "WAITING 15 MINUTES..."
                 )
 
                 time.sleep(
@@ -948,18 +999,9 @@ def scanner_loop():
 
         except Exception as e:
 
-            log("")
-            log(
-                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-            )
-
             log(
                 f"MAIN LOOP ERROR: "
                 f"{repr(e)}"
-            )
-
-            log(
-                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
             )
 
             time.sleep(60)
@@ -972,79 +1014,57 @@ def scanner_loop():
 def main():
 
     log("")
-    log("============================================================")
-    log("BOT.PY STARTED")
-    log("============================================================")
-
     log(
-        f"Python version: "
-        f"{sys.version}"
+        "============================================================"
     )
 
     log(
-        f"Process ID: "
-        f"{os.getpid()}"
+        "BOT.PY STARTED"
     )
 
-    # --------------------------------------------------------
-    # Environment check
-    # --------------------------------------------------------
+    log(
+        f"PYTHON: {sys.version}"
+    )
 
-    if TELEGRAM_BOT_TOKEN:
+    log(
+        "============================================================"
+    )
 
-        log(
-            "TELEGRAM_BOT_TOKEN: FOUND"
+    # Environment
+    log(
+        "TELEGRAM TOKEN: "
+        + (
+            "FOUND"
+            if TELEGRAM_BOT_TOKEN
+            else "MISSING"
         )
+    )
 
-    else:
-
-        log(
-            "TELEGRAM_BOT_TOKEN: MISSING"
+    log(
+        "TELEGRAM CHAT ID: "
+        + (
+            "FOUND"
+            if TELEGRAM_CHAT_ID
+            else "MISSING"
         )
+    )
 
-    if TELEGRAM_CHAT_ID:
-
-        log(
-            "TELEGRAM_CHAT_ID: FOUND"
-        )
-
-    else:
-
-        log(
-            "TELEGRAM_CHAT_ID: MISSING"
-        )
-
-    # --------------------------------------------------------
     # Health server
-    # --------------------------------------------------------
-
-    health_thread = threading.Thread(
+    thread = threading.Thread(
         target=start_health_server,
         daemon=True
     )
 
-    health_thread.start()
+    thread.start()
 
-    log(
-        "HEALTH SERVER THREAD STARTED."
-    )
-
-    # Give health server a moment.
     time.sleep(1)
 
-    # --------------------------------------------------------
     # Scanner
-    # --------------------------------------------------------
-
-    log(
-        "STARTING SCANNER LOOP..."
-    )
-
     scanner_loop()
 
 
 # ============================================================
-# ENTRY POINT
+# START
 # ============================================================
 
 if __name__ == "__main__":
@@ -1053,20 +1073,10 @@ if __name__ == "__main__":
 
         main()
 
-    except KeyboardInterrupt:
-
-        log(
-            "BOT STOPPED BY KEYBOARD."
-        )
-
     except Exception as e:
 
         log(
-            "FATAL BOT ERROR:"
-        )
-
-        log(
-            repr(e)
+            f"FATAL ERROR: {repr(e)}"
         )
 
         raise
