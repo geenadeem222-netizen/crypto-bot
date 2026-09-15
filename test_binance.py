@@ -1,17 +1,22 @@
 import requests
 import json
-import time
 
-BASE_URL = "https://api.primit.xyz"
+BASE_URL = "https://api-dev.pipai.org"
 
-print("=" * 60)
-print("PRIMIT OI + FUNDING API TEST")
-print("=" * 60)
+print("=" * 70)
+print("PIPAI / PRIMIT FREE OI + FUNDING TEST")
+print("=" * 70)
 
 
-def test_endpoint(name, url, params=None):
-    print(f"\nTesting {name}...")
+def test(name, endpoint, params=None):
+    print("\n" + "-" * 70)
+    print(name)
+    print("-" * 70)
+
+    url = BASE_URL + endpoint
+
     print("URL:", url)
+
     if params:
         print("PARAMS:", params)
 
@@ -19,40 +24,33 @@ def test_endpoint(name, url, params=None):
         r = requests.get(
             url,
             params=params,
-            timeout=20
+            timeout=25,
+            headers={
+                "User-Agent": "Mozilla/5.0"
+            }
         )
 
         print("STATUS:", r.status_code)
 
+        print("\nRESPONSE:")
+
         try:
             data = r.json()
-            print("DATA RECEIVED:", "YES" if data else "NO")
-            print(json.dumps(data, indent=2)[:12000])
+            print(json.dumps(data, indent=2)[:15000])
         except Exception:
-            print("RAW RESPONSE:")
-            print(r.text[:5000])
+            print(r.text[:10000])
 
     except Exception as e:
         print("ERROR:", repr(e))
 
 
 # ============================================================
-# 1. EXCHANGE INFO
+# 1. 15M HISTORICAL OPEN INTEREST
 # ============================================================
 
-test_endpoint(
-    "EXCHANGE INFO",
-    f"{BASE_URL}/fapi/v1/exchangeInfo"
-)
-
-
-# ============================================================
-# 2. BTC 15M HISTORICAL OPEN INTEREST
-# ============================================================
-
-test_endpoint(
-    "BTC 15M OPEN INTEREST",
-    f"{BASE_URL}/futures/data/openInterestHist",
+test(
+    "BTC 15M HISTORICAL OPEN INTEREST",
+    "/openInterestHist",
     {
         "symbol": "BTCUSDT",
         "period": "15m",
@@ -62,12 +60,12 @@ test_endpoint(
 
 
 # ============================================================
-# 3. BTC 1H HISTORICAL OPEN INTEREST
+# 2. 1H HISTORICAL OPEN INTEREST
 # ============================================================
 
-test_endpoint(
-    "BTC 1H OPEN INTEREST",
-    f"{BASE_URL}/futures/data/openInterestHist",
+test(
+    "BTC 1H HISTORICAL OPEN INTEREST",
+    "/openInterestHist",
     {
         "symbol": "BTCUSDT",
         "period": "1h",
@@ -77,26 +75,25 @@ test_endpoint(
 
 
 # ============================================================
-# 4. BTC FUNDING HISTORY
+# 3. HISTORICAL FUNDING
 # ============================================================
 
-test_endpoint(
-    "BTC FUNDING HISTORY",
-    f"{BASE_URL}/fapi/v1/fundingRate",
+test(
+    "BTC HISTORICAL FUNDING",
+    "/funding/rates/BTCUSDT/history",
     {
-        "symbol": "BTCUSDT",
         "limit": 5
     }
 )
 
 
 # ============================================================
-# 5. BTC CURRENT OPEN INTEREST
+# 4. CURRENT OPEN INTEREST
 # ============================================================
 
-test_endpoint(
+test(
     "BTC CURRENT OPEN INTEREST",
-    f"{BASE_URL}/fapi/v1/openInterest",
+    "/fapi/v1/openInterest",
     {
         "symbol": "BTCUSDT"
     }
@@ -104,12 +101,22 @@ test_endpoint(
 
 
 # ============================================================
-# 6. BTC 5M PRICE CANDLES
+# 5. CURRENT FUNDING
 # ============================================================
 
-test_endpoint(
-    "BTC 5M CANDLES",
-    f"{BASE_URL}/fapi/v1/klines",
+test(
+    "BTC CURRENT FUNDING",
+    "/funding/rates/BTCUSDT"
+)
+
+
+# ============================================================
+# 6. 5M FUTURES CANDLES
+# ============================================================
+
+test(
+    "BTC 5M FUTURES CANDLES",
+    "/fapi/v1/klines",
     {
         "symbol": "BTCUSDT",
         "interval": "5m",
@@ -119,12 +126,12 @@ test_endpoint(
 
 
 # ============================================================
-# 7. BTC 15M PRICE CANDLES
+# 7. 15M FUTURES CANDLES
 # ============================================================
 
-test_endpoint(
-    "BTC 15M CANDLES",
-    f"{BASE_URL}/fapi/v1/klines",
+test(
+    "BTC 15M FUTURES CANDLES",
+    "/fapi/v1/klines",
     {
         "symbol": "BTCUSDT",
         "interval": "15m",
@@ -134,12 +141,12 @@ test_endpoint(
 
 
 # ============================================================
-# 8. BTC 1H PRICE CANDLES
+# 8. 1H FUTURES CANDLES
 # ============================================================
 
-test_endpoint(
-    "BTC 1H CANDLES",
-    f"{BASE_URL}/fapi/v1/klines",
+test(
+    "BTC 1H FUTURES CANDLES",
+    "/fapi/v1/klines",
     {
         "symbol": "BTCUSDT",
         "interval": "1h",
@@ -148,6 +155,7 @@ test_endpoint(
 )
 
 
-print("\n" + "=" * 60)
-print("PRIMIT TEST FINISHED")
-print("=" * 60)
+print("\n")
+print("=" * 70)
+print("PIPAI / PRIMIT TEST FINISHED")
+print("=" * 70)
