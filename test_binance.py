@@ -1,61 +1,52 @@
-import os
-import json
 import asyncio
+import json
 import websockets
 
-API_KEY = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET")
-
-print("====================================")
-print("BINANCE WEBSOCKET CONNECTION TEST")
-print("====================================")
-
-if API_KEY:
-    print("BINANCE_API_KEY: FOUND")
-else:
-    print("BINANCE_API_KEY: NOT FOUND")
-
-if API_SECRET:
-    print("BINANCE_API_SECRET: FOUND")
-else:
-    print("BINANCE_API_SECRET: NOT FOUND")
+URL = "wss://fstream.binance.com/ws/btcusdt@ticker"
 
 
-async def test_websocket():
-    url = "wss://fstream.binance.com/ws/btcusdt@markPrice"
-
-    print("\nConnecting to Binance Futures WebSocket...")
-    print(url)
+async def main():
+    print("====================================")
+    print("BINANCE FUTURES WEBSOCKET TEST 2")
+    print("====================================")
+    print("Connecting...")
+    print(URL)
 
     try:
         async with websockets.connect(
-            url,
+            URL,
             ping_interval=20,
-            ping_timeout=20,
+            ping_timeout=None,
             close_timeout=10
         ) as ws:
 
             print("WEBSOCKET CONNECTED SUCCESSFULLY!")
+            print("Waiting for live data...\n")
 
-            message = await asyncio.wait_for(ws.recv(), timeout=15)
+            for i in range(5):
+                message = await asyncio.wait_for(
+                    ws.recv(),
+                    timeout=30
+                )
 
-            data = json.loads(message)
+                data = json.loads(message)
 
-            print("\nLIVE BINANCE DATA RECEIVED:")
-            print("Symbol:", data.get("s"))
-            print("Mark Price:", data.get("p"))
-            print("Funding Rate:", data.get("r"))
-            print("Event Time:", data.get("E"))
+                print("LIVE DATA RECEIVED!")
+                print("Symbol:", data.get("s"))
+                print("Last Price:", data.get("c"))
+                print("24h Volume:", data.get("q"))
+                print("Event Time:", data.get("E"))
+                print("------------------------------------")
 
             print("\n====================================")
-            print("BINANCE WEBSOCKET TEST: SUCCESS")
+            print("BINANCE WEBSOCKET TEST 2: SUCCESS")
             print("====================================")
 
     except Exception as e:
         print("\n====================================")
-        print("BINANCE WEBSOCKET TEST: FAILED")
+        print("BINANCE WEBSOCKET TEST 2: FAILED")
         print("ERROR:", repr(e))
         print("====================================")
 
 
-asyncio.run(test_websocket())
+asyncio.run(main())
