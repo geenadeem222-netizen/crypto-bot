@@ -1,108 +1,72 @@
 import requests
+import json
 
-BASE = "https://api.bybit.com"
+BASE = "https://marginpad.io/api/v1"
 
 print("====================================")
-print("BYBIT PUBLIC API TEST")
+print("MARGINPAD FREE API TEST")
 print("====================================")
 
-symbol = "BTCUSDT"
 
-# 15M Open Interest
-try:
-    url = f"{BASE}/v5/market/open-interest"
-    params = {
-        "category": "linear",
-        "symbol": symbol,
-        "intervalTime": "15min",
-        "limit": 5
-    }
+def test_endpoint(name, endpoint):
+    print(f"\nTesting {name}...")
+    print(endpoint)
 
-    r = requests.get(url, params=params, timeout=20)
+    try:
+        response = requests.get(endpoint, timeout=20)
 
-    print("\n15M OI STATUS:", r.status_code)
+        print("STATUS:", response.status_code)
 
-    if r.status_code == 200:
-        data = r.json()
+        if response.status_code == 200:
+            data = response.json()
 
-        if data.get("retCode") == 0:
-            items = data.get("result", {}).get("list", [])
-            print("15M OI DATA: SUCCESS")
-            print("Samples:", len(items))
-            print(items)
+            print("DATA RECEIVED: YES")
+            print(json.dumps(data, indent=2)[:5000])
+
         else:
-            print("15M OI API ERROR:")
-            print(data)
-    else:
-        print(r.text[:1000])
+            print("DATA RECEIVED: NO")
+            print(response.text[:2000])
 
-except Exception as e:
-    print("15M OI ERROR:", repr(e))
+    except Exception as e:
+        print("ERROR:", repr(e))
 
 
-# 1H Open Interest
-try:
-    params = {
-        "category": "linear",
-        "symbol": symbol,
-        "intervalTime": "1h",
-        "limit": 5
-    }
-
-    r = requests.get(url, params=params, timeout=20)
-
-    print("\n1H OI STATUS:", r.status_code)
-
-    if r.status_code == 200:
-        data = r.json()
-
-        if data.get("retCode") == 0:
-            items = data.get("result", {}).get("list", [])
-            print("1H OI DATA: SUCCESS")
-            print("Samples:", len(items))
-            print(items)
-        else:
-            print("1H OI API ERROR:")
-            print(data)
-    else:
-        print(r.text[:1000])
-
-except Exception as e:
-    print("1H OI ERROR:", repr(e))
-
+# Symbols
+test_endpoint(
+    "SYMBOLS",
+    f"{BASE}/symbols"
+)
 
 # Funding
-try:
-    url_funding = f"{BASE}/v5/market/funding/history"
+test_endpoint(
+    "FUNDING",
+    f"{BASE}/funding"
+)
 
-    params = {
-        "category": "linear",
-        "symbol": symbol,
-        "limit": 5
-    }
+# Open Interest
+test_endpoint(
+    "OPEN INTEREST",
+    f"{BASE}/open-interest"
+)
 
-    r = requests.get(url_funding, params=params, timeout=20)
+# 5 minute candles
+test_endpoint(
+    "5M CANDLES",
+    f"{BASE}/klines?symbol=BTC&interval=5"
+)
 
-    print("\nFUNDING STATUS:", r.status_code)
+# 15 minute candles
+test_endpoint(
+    "15M CANDLES",
+    f"{BASE}/klines?symbol=BTC&interval=15"
+)
 
-    if r.status_code == 200:
-        data = r.json()
-
-        if data.get("retCode") == 0:
-            items = data.get("result", {}).get("list", [])
-            print("FUNDING DATA: SUCCESS")
-            print("Samples:", len(items))
-            print(items)
-        else:
-            print("FUNDING API ERROR:")
-            print(data)
-    else:
-        print(r.text[:1000])
-
-except Exception as e:
-    print("FUNDING ERROR:", repr(e))
-
+# 1 hour candles
+test_endpoint(
+    "1H CANDLES",
+    f"{BASE}/klines?symbol=BTC&interval=60"
+)
 
 print("\n====================================")
-print("BYBIT TEST FINISHED")
+print("MARGINPAD TEST FINISHED")
 print("====================================")
