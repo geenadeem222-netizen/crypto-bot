@@ -108,7 +108,7 @@ def binance_get(endpoint, params=None):
             timeout=20
         )
 
-        if response.status_code != 200:
+        if response.status_code not in (200, 202):
 
             logging.error(
                 "Binance HTTP %s: %s",
@@ -128,50 +128,6 @@ def binance_get(endpoint, params=None):
         )
 
         return None
-
-
-# ============================================================
-# GET FUTURES USDT SYMBOLS
-# ============================================================
-
-def get_usdt_symbols():
-
-    data = binance_get(
-        "/fapi/v1/exchangeInfo"
-    )
-
-    if not data:
-        return []
-
-    symbols = []
-
-    for item in data.get("symbols", []):
-
-        try:
-
-            if (
-                item.get("status") == "TRADING"
-                and item.get("quoteAsset") == "USDT"
-                and item.get("contractType") == "PERPETUAL"
-            ):
-
-                symbols.append(
-                    item["symbol"]
-                )
-
-        except Exception:
-
-            continue
-
-    symbols.sort()
-
-    logging.info(
-        "Futures USDT symbols found: %s",
-        len(symbols)
-    )
-
-    return symbols
-
 
 # ============================================================
 # GET KLINES
