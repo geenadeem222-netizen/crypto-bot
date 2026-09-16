@@ -70,7 +70,7 @@ def send_telegram(message):
             timeout=20
         )
 
-        if response.status_code == 200:
+       if response.status_code not in (200, 202):
 
             logging.info("Telegram alert sent.")
 
