@@ -11,7 +11,7 @@ import pandas as pd
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-BINANCE_BASE_URL = "https://fapi.binance.com"
+BINANCE_BASE_URL = "https://fapi1.binance.com"
 
 RSI_FAST = 7
 RSI_SLOW = 14
