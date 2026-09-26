@@ -1,4 +1,3 @@
-```python
 import os
 import time
 import logging
@@ -685,5 +684,4 @@ if __name__ == "__main__":
     )
 
     run_scanner()
-```
 
