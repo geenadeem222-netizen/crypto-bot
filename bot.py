@@ -1,3 +1,4 @@
+```python
 import os
 import time
 import json
@@ -28,26 +29,22 @@ BINANCE_WS_URL = "wss://fstream.binance.com/stream"
 RSI_FAST = 7
 RSI_SLOW = 14
 
-# 250 closed 5M candles = enough history for 1H + 15M RSI.
-# We do NOT need 500 candles.
+# 250 closed 5M candles are enough for 1H and 15M RSI.
 HISTORY_5M = 250
 
-# Controlled startup request speed.
-# Do not hammer Binance.
-STARTUP_REQUEST_DELAY = 0.40
+# Normal request delay.
+# IMPORTANT: Do NOT use 60 seconds between every coin.
+STARTUP_REQUEST_DELAY = 1.0
 
-# Maximum streams per websocket connection.
-STREAMS_PER_CONNECTION = 900
+# Cooldown if Binance returns 429.
+RATE_LIMIT_WAIT = 60
+
+# Cooldown if Binance returns 418.
+IP_BAN_WAIT = 60
 
 REQUEST_TIMEOUT = 30
 
-# If Binance gives 418 during startup, do not wait for the
-# huge Retry-After value. Stop this startup attempt and retry
-# later instead of hammering the banned IP.
-IP_BAN_RETRY_DELAY = 600
-
-# Number of startup attempts if Binance is temporarily blocking.
-STARTUP_RETRY_DELAY = 120
+STREAMS_PER_CONNECTION = 900
 
 
 # ============================================================
@@ -81,8 +78,11 @@ last_alerted_candle = {}
 # ============================================================
 
 def send_telegram(message):
+
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("Telegram credentials are missing.")
+        logger.warning(
+            "Telegram credentials are missing."
+        )
         return False
 
     url = (
@@ -96,6 +96,7 @@ def send_telegram(message):
     }
 
     try:
+
         response = requests.post(
             url,
             json=payload,
@@ -103,7 +104,11 @@ def send_telegram(message):
         )
 
         if response.status_code == 200:
-            logger.info("Telegram alert sent.")
+
+            logger.info(
+                "Telegram alert sent."
+            )
+
             return True
 
         logger.error(
@@ -113,7 +118,11 @@ def send_telegram(message):
         )
 
     except Exception as e:
-        logger.error("Telegram exception: %s", e)
+
+        logger.error(
+            "Telegram exception: %s",
+            e
+        )
 
     return False
 
@@ -123,9 +132,10 @@ def send_telegram(message):
 # ============================================================
 
 def calculate_rsi(values, period=14):
+
     """
     RSI using Wilder-style exponential smoothing.
-    Returns the latest RSI value.
+    Returns latest RSI value.
     """
 
     if len(values) < period + 1:
@@ -134,29 +144,54 @@ def calculate_rsi(values, period=14):
     changes = []
 
     for i in range(1, len(values)):
-        changes.append(values[i] - values[i - 1])
 
-    gains = [max(change, 0.0) for change in changes]
-    losses = [max(-change, 0.0) for change in changes]
+        changes.append(
+            values[i] - values[i - 1]
+        )
 
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
+    gains = [
+        max(change, 0.0)
+        for change in changes
+    ]
+
+    losses = [
+        max(-change, 0.0)
+        for change in changes
+    ]
+
+    avg_gain = (
+        sum(gains[:period]) / period
+    )
+
+    avg_loss = (
+        sum(losses[:period]) / period
+    )
 
     for i in range(period, len(gains)):
+
         avg_gain = (
-            (avg_gain * (period - 1)) + gains[i]
+            (
+                avg_gain * (period - 1)
+            )
+            + gains[i]
         ) / period
 
         avg_loss = (
-            (avg_loss * (period - 1)) + losses[i]
+            (
+                avg_loss * (period - 1)
+            )
+            + losses[i]
         ) / period
 
     if avg_loss == 0:
+
         return 100.0
 
     rs = avg_gain / avg_loss
 
-    return 100.0 - (100.0 / (1.0 + rs))
+    return 100.0 - (
+        100.0 / (1.0 + rs)
+    )
 
 
 # ============================================================
@@ -164,24 +199,41 @@ def calculate_rsi(values, period=14):
 # ============================================================
 
 def get_usdt_symbols():
-    url = f"{BINANCE_REST_URL}/fapi/v1/exchangeInfo"
+
+    url = (
+        f"{BINANCE_REST_URL}"
+        f"/fapi/v1/exchangeInfo"
+    )
 
     try:
+
         response = requests.get(
             url,
             timeout=REQUEST_TIMEOUT
         )
 
+        # ----------------------------------------------------
+        # 418
+        # ----------------------------------------------------
+
         if response.status_code == 418:
+
             logger.error(
-                "Binance IP is currently banned/rate limited."
+                "Binance returned 418 while getting symbols."
             )
+
             return []
 
+        # ----------------------------------------------------
+        # 429
+        # ----------------------------------------------------
+
         if response.status_code == 429:
+
             logger.error(
                 "Binance returned 429 while getting symbols."
             )
+
             return []
 
         response.raise_for_status()
@@ -191,12 +243,16 @@ def get_usdt_symbols():
         symbols = []
 
         for item in data.get("symbols", []):
+
             if (
                 item.get("status") == "TRADING"
                 and item.get("quoteAsset") == "USDT"
                 and item.get("contractType") == "PERPETUAL"
             ):
-                symbols.append(item["symbol"])
+
+                symbols.append(
+                    item["symbol"]
+                )
 
         symbols.sort()
 
@@ -208,10 +264,12 @@ def get_usdt_symbols():
         return symbols
 
     except Exception as e:
+
         logger.error(
             "Could not get Binance symbols: %s",
             e
         )
+
         return []
 
 
@@ -220,16 +278,11 @@ def get_usdt_symbols():
 # ============================================================
 
 def get_initial_5m_history(symbol):
-    """
-    Get initial closed 5M candles.
 
-    Important:
-    - Only 250 candles.
-    - Controlled request speed is handled by load_history().
-    - 418/429 does NOT cause an endless long sleep here.
-    """
-
-    url = f"{BINANCE_REST_URL}/fapi/v1/klines"
+    url = (
+        f"{BINANCE_REST_URL}"
+        f"/fapi/v1/klines"
+    )
 
     params = {
         "symbol": symbol,
@@ -238,6 +291,7 @@ def get_initial_5m_history(symbol):
     }
 
     try:
+
         response = requests.get(
             url,
             params=params,
@@ -245,25 +299,41 @@ def get_initial_5m_history(symbol):
         )
 
         # ----------------------------------------------------
-        # 429
+        # 429 RATE LIMIT
         # ----------------------------------------------------
 
         if response.status_code == 429:
+
             logger.warning(
-                "429 received for %s.",
-                symbol
+                "429 rate limit for %s. "
+                "Waiting %d seconds.",
+                symbol,
+                RATE_LIMIT_WAIT
             )
+
+            time.sleep(
+                RATE_LIMIT_WAIT
+            )
+
             return "RATE_LIMIT"
 
         # ----------------------------------------------------
-        # 418
+        # 418 IP BAN
         # ----------------------------------------------------
 
         if response.status_code == 418:
+
             logger.error(
-                "418 IP BAN received for %s.",
-                symbol
+                "418 IP BAN for %s. "
+                "Waiting %d seconds.",
+                symbol,
+                IP_BAN_WAIT
             )
+
+            time.sleep(
+                IP_BAN_WAIT
+            )
+
             return "IP_BAN"
 
         response.raise_for_status()
@@ -277,32 +347,39 @@ def get_initial_5m_history(symbol):
         candles = []
 
         for row in rows:
-            open_time = int(row[0])
-            close_price = float(row[4])
-            close_time = int(row[6])
+
+            open_time = int(
+                row[0]
+            )
+
+            close_price = float(
+                row[4]
+            )
+
+            close_time = int(
+                row[6]
+            )
 
             # Only CLOSED candles.
             if close_time < now_ms:
+
                 candles.append(
-                    (open_time, close_price)
+                    (
+                        open_time,
+                        close_price
+                    )
                 )
 
         return candles
 
-    except requests.exceptions.RequestException as e:
-        logger.error(
-            "History request error %s: %s",
-            symbol,
-            e
-        )
-        return None
-
     except Exception as e:
+
         logger.error(
             "History error %s: %s",
             symbol,
             e
         )
+
         return None
 
 
@@ -311,6 +388,7 @@ def get_initial_5m_history(symbol):
 # ============================================================
 
 def build_15m_closes(candles):
+
     """
     Convert closed 5M candles into completed 15M closes.
     """
@@ -318,29 +396,38 @@ def build_15m_closes(candles):
     groups = {}
 
     for open_time, close_price in candles:
+
         group_start = (
-            open_time // (15 * 60 * 1000)
+            open_time
+            // (15 * 60 * 1000)
         ) * (15 * 60 * 1000)
 
         if group_start not in groups:
+
             groups[group_start] = []
 
         groups[group_start].append(
-            (open_time, close_price)
+            (
+                open_time,
+                close_price
+            )
         )
 
     result = []
 
-    for group_start in sorted(groups.keys()):
+    for group_start in sorted(
+        groups.keys()
+    ):
+
         group = groups[group_start]
 
         group.sort(
             key=lambda x: x[0]
         )
 
-        # Need 3 five-minute candles
-        # for a completed 15-minute candle.
+        # Need 3 five-minute candles.
         if len(group) >= 3:
+
             result.append(
                 group[-1][1]
             )
@@ -353,6 +440,7 @@ def build_15m_closes(candles):
 # ============================================================
 
 def build_1h_closes(candles):
+
     """
     Convert closed 5M candles into completed 1H closes.
     """
@@ -360,29 +448,38 @@ def build_1h_closes(candles):
     groups = {}
 
     for open_time, close_price in candles:
+
         group_start = (
-            open_time // (60 * 60 * 1000)
+            open_time
+            // (60 * 60 * 1000)
         ) * (60 * 60 * 1000)
 
         if group_start not in groups:
+
             groups[group_start] = []
 
         groups[group_start].append(
-            (open_time, close_price)
+            (
+                open_time,
+                close_price
+            )
         )
 
     result = []
 
-    for group_start in sorted(groups.keys()):
+    for group_start in sorted(
+        groups.keys()
+    ):
+
         group = groups[group_start]
 
         group.sort(
             key=lambda x: x[0]
         )
 
-        # Need 12 five-minute candles
-        # for a completed 1-hour candle.
+        # Need 12 five-minute candles.
         if len(group) >= 12:
+
             result.append(
                 group[-1][1]
             )
@@ -395,7 +492,9 @@ def build_1h_closes(candles):
 # ============================================================
 
 def get_rsi_values(symbol):
+
     with data_lock:
+
         candles = list(
             five_minute_data.get(
                 symbol,
@@ -404,6 +503,7 @@ def get_rsi_values(symbol):
         )
 
     if len(candles) < RSI_SLOW + 1:
+
         return None
 
     five_closes = [
@@ -420,9 +520,11 @@ def get_rsi_values(symbol):
     )
 
     if len(closes_15m) < RSI_SLOW + 1:
+
         return None
 
     if len(closes_1h) < RSI_SLOW + 1:
+
         return None
 
     rsi_5m_fast = calculate_rsi(
@@ -466,6 +568,7 @@ def get_rsi_values(symbol):
             rsi_1h_slow
         ]
     ):
+
         return None
 
     return {
@@ -483,7 +586,9 @@ def get_rsi_values(symbol):
 # ============================================================
 
 def get_previous_5m_rsi_values(symbol):
+
     with data_lock:
+
         candles = list(
             five_minute_data.get(
                 symbol,
@@ -492,6 +597,7 @@ def get_previous_5m_rsi_values(symbol):
         )
 
     if len(candles) < RSI_SLOW + 2:
+
         return None
 
     previous_candles = candles[:-1]
@@ -535,6 +641,7 @@ def get_previous_5m_rsi_values(symbol):
             current_rsi_14
         ]
     ):
+
         return None
 
     return {
@@ -550,14 +657,18 @@ def get_previous_5m_rsi_values(symbol):
 # ============================================================
 
 def check_signal(symbol):
-    values = get_rsi_values(symbol)
+
+    values = get_rsi_values(
+        symbol
+    )
 
     if values is None:
+
         return None
 
     # --------------------------------------------------------
-    # 1H CONDITION
-    # RSI(7) < RSI(14)
+    # 1H
+    # RSI7 < RSI14
     # --------------------------------------------------------
 
     if not (
@@ -565,11 +676,12 @@ def check_signal(symbol):
         <
         values["rsi_1h_slow"]
     ):
+
         return None
 
     # --------------------------------------------------------
-    # 15M CONDITION
-    # RSI(7) < RSI(14)
+    # 15M
+    # RSI7 < RSI14
     # --------------------------------------------------------
 
     if not (
@@ -577,6 +689,7 @@ def check_signal(symbol):
         <
         values["rsi_15m_slow"]
     ):
+
         return None
 
     # --------------------------------------------------------
@@ -594,6 +707,7 @@ def check_signal(symbol):
     )
 
     if cross is None:
+
         return None
 
     if not (
@@ -601,6 +715,7 @@ def check_signal(symbol):
         >=
         cross["previous_rsi_14"]
     ):
+
         return None
 
     if not (
@@ -608,9 +723,11 @@ def check_signal(symbol):
         <
         cross["current_rsi_14"]
     ):
+
         return None
 
     with data_lock:
+
         candles = list(
             five_minute_data.get(
                 symbol,
@@ -619,18 +736,31 @@ def check_signal(symbol):
         )
 
     if not candles:
+
         return None
 
     candle_id = candles[-1][0]
 
     return {
         "candle_id": candle_id,
-        "rsi_1h_7": values["rsi_1h_fast"],
-        "rsi_1h_14": values["rsi_1h_slow"],
-        "rsi_15m_7": values["rsi_15m_fast"],
-        "rsi_15m_14": values["rsi_15m_slow"],
-        "rsi_5m_7": cross["current_rsi_7"],
-        "rsi_5m_14": cross["current_rsi_14"]
+
+        "rsi_1h_7":
+            values["rsi_1h_fast"],
+
+        "rsi_1h_14":
+            values["rsi_1h_slow"],
+
+        "rsi_15m_7":
+            values["rsi_15m_fast"],
+
+        "rsi_15m_14":
+            values["rsi_15m_slow"],
+
+        "rsi_5m_7":
+            cross["current_rsi_7"],
+
+        "rsi_5m_14":
+            cross["current_rsi_14"]
     }
 
 
@@ -639,59 +769,92 @@ def check_signal(symbol):
 # ============================================================
 
 def process_closed_5m_candle(symbol):
-    signal = check_signal(symbol)
+
+    signal = check_signal(
+        symbol
+    )
 
     if signal is None:
+
         return
 
-    candle_id = signal["candle_id"]
+    candle_id = signal[
+        "candle_id"
+    ]
 
     with data_lock:
-        previous_alert = last_alerted_candle.get(
-            symbol
+
+        previous_alert = (
+            last_alerted_candle.get(
+                symbol
+            )
         )
 
         if previous_alert == candle_id:
+
             return
 
-        last_alerted_candle[symbol] = candle_id
+        last_alerted_candle[
+            symbol
+        ] = candle_id
 
-    candle_time = datetime.fromtimestamp(
-        candle_id / 1000,
-        tz=timezone.utc
-    ).strftime(
-        "%Y-%m-%d %H:%M UTC"
+    candle_time = (
+        datetime.fromtimestamp(
+            candle_id / 1000,
+            tz=timezone.utc
+        )
+        .strftime(
+            "%Y-%m-%d %H:%M UTC"
+        )
     )
 
     message = (
         "🔴 RSI SEQUENCE CONFIRMED\n\n"
+
         f"Coin: {symbol}\n"
+
         f"5M Candle: {candle_time}\n\n"
+
         "1H: RSI7 < RSI14\n"
-        f"RSI7: {signal['rsi_1h_7']:.2f}\n"
-        f"RSI14: {signal['rsi_1h_14']:.2f}\n\n"
+        f"RSI7: "
+        f"{signal['rsi_1h_7']:.2f}\n"
+        f"RSI14: "
+        f"{signal['rsi_1h_14']:.2f}\n\n"
+
         "15M: RSI7 < RSI14\n"
-        f"RSI7: {signal['rsi_15m_7']:.2f}\n"
-        f"RSI14: {signal['rsi_15m_14']:.2f}\n\n"
+        f"RSI7: "
+        f"{signal['rsi_15m_7']:.2f}\n"
+        f"RSI14: "
+        f"{signal['rsi_15m_14']:.2f}\n\n"
+
         "5M: FRESH CROSS BELOW RSI14\n"
-        f"RSI7: {signal['rsi_5m_7']:.2f}\n"
-        f"RSI14: {signal['rsi_5m_14']:.2f}"
+        f"RSI7: "
+        f"{signal['rsi_5m_7']:.2f}\n"
+        f"RSI14: "
+        f"{signal['rsi_5m_14']:.2f}"
     )
 
     logger.info(
-        "SIGNAL: %s | 1H RSI7 %.2f < %.2f | "
+        "SIGNAL: %s | "
+        "1H RSI7 %.2f < %.2f | "
         "15M RSI7 %.2f < %.2f | "
         "5M CROSS %.2f < %.2f",
+
         symbol,
+
         signal["rsi_1h_7"],
         signal["rsi_1h_14"],
+
         signal["rsi_15m_7"],
         signal["rsi_15m_14"],
+
         signal["rsi_5m_7"],
         signal["rsi_5m_14"]
     )
 
-    send_telegram(message)
+    send_telegram(
+        message
+    )
 
 
 # ============================================================
@@ -699,27 +862,43 @@ def process_closed_5m_candle(symbol):
 # ============================================================
 
 def on_ws_message(ws, message):
-    try:
-        payload = json.loads(message)
 
-        data = payload.get("data", payload)
+    try:
+
+        payload = json.loads(
+            message
+        )
+
+        data = payload.get(
+            "data",
+            payload
+        )
 
         if data.get("e") != "kline":
+
             return
 
-        kline = data.get("k", {})
+        kline = data.get(
+            "k",
+            {}
+        )
 
-        # Only 5M candles.
+        # Only 5M.
         if kline.get("i") != "5m":
+
             return
 
-        # Only CLOSED candles.
+        # Only CLOSED candle.
         if not kline.get("x"):
+
             return
 
-        symbol = kline.get("s")
+        symbol = kline.get(
+            "s"
+        )
 
         if not symbol:
+
             return
 
         symbol = symbol.upper()
@@ -735,14 +914,26 @@ def on_ws_message(ws, message):
         with data_lock:
 
             if symbol not in five_minute_data:
-                five_minute_data[symbol] = deque(
+
+                five_minute_data[
+                    symbol
+                ] = deque(
                     maxlen=HISTORY_5M
                 )
 
-            candles = five_minute_data[symbol]
+            candles = (
+                five_minute_data[
+                    symbol
+                ]
+            )
 
-            # Avoid duplicate candle insertion.
-            if candles and candles[-1][0] == open_time:
+            # Avoid duplicate candle.
+            if (
+                candles
+                and
+                candles[-1][0]
+                == open_time
+            ):
 
                 candles[-1] = (
                     open_time,
@@ -758,10 +949,13 @@ def on_ws_message(ws, message):
                     )
                 )
 
-        # Signal is checked ONLY after 5M candle close.
-        process_closed_5m_candle(symbol)
+        # Check ONLY after 5M candle closes.
+        process_closed_5m_candle(
+            symbol
+        )
 
     except Exception as e:
+
         logger.error(
             "WebSocket message error: %s",
             e
@@ -769,13 +963,19 @@ def on_ws_message(ws, message):
 
 
 def on_ws_error(ws, error):
+
     logger.error(
         "WebSocket error: %s",
         error
     )
 
 
-def on_ws_close(ws, close_status_code, close_msg):
+def on_ws_close(
+    ws,
+    close_status_code,
+    close_msg
+):
+
     logger.warning(
         "WebSocket closed: %s | %s",
         close_status_code,
@@ -784,6 +984,7 @@ def on_ws_close(ws, close_status_code, close_msg):
 
 
 def on_ws_open(ws):
+
     logger.info(
         "WebSocket connected."
     )
@@ -793,14 +994,19 @@ def on_ws_open(ws):
 # WEBSOCKET CONNECTION
 # ============================================================
 
-def websocket_worker(symbols, worker_number):
+def websocket_worker(
+    symbols,
+    worker_number
+):
 
     streams = [
         f"{symbol.lower()}@kline_5m"
         for symbol in symbols
     ]
 
-    stream_string = "/".join(streams)
+    stream_string = "/".join(
+        streams
+    )
 
     url = (
         f"{BINANCE_WS_URL}"
@@ -808,7 +1014,8 @@ def websocket_worker(symbols, worker_number):
     )
 
     logger.info(
-        "Starting WebSocket worker %d with %d symbols.",
+        "Starting WebSocket worker %d "
+        "with %d symbols.",
         worker_number,
         len(symbols)
     )
@@ -839,7 +1046,8 @@ def websocket_worker(symbols, worker_number):
             )
 
         logger.warning(
-            "WebSocket worker %d reconnecting in 10 seconds...",
+            "WebSocket worker %d "
+            "reconnecting in 10 seconds...",
             worker_number
         )
 
@@ -871,30 +1079,27 @@ def load_history(symbols):
         )
 
         # ----------------------------------------------------
-        # IP BAN
+        # 418
         # ----------------------------------------------------
 
         if result == "IP_BAN":
 
             logger.error(
-                "Binance IP ban detected during history loading."
-            )
-
-            logger.error(
-                "Stopping startup history loading."
+                "Binance 418 detected. "
+                "Stopping history loading."
             )
 
             return False
 
         # ----------------------------------------------------
-        # RATE LIMIT
+        # 429
         # ----------------------------------------------------
 
         if result == "RATE_LIMIT":
 
             logger.warning(
-                "Rate limit detected. "
-                "Stopping startup history loading."
+                "Binance 429 detected. "
+                "Stopping history loading."
             )
 
             return False
@@ -903,11 +1108,16 @@ def load_history(symbols):
         # SUCCESS
         # ----------------------------------------------------
 
-        if isinstance(result, list) and result:
+        if (
+            isinstance(result, list)
+            and result
+        ):
 
             with data_lock:
 
-                five_minute_data[symbol] = deque(
+                five_minute_data[
+                    symbol
+                ] = deque(
                     result,
                     maxlen=HISTORY_5M
                 )
@@ -924,14 +1134,15 @@ def load_history(symbols):
         ):
 
             logger.info(
-                "History progress: %d/%d | Successful: %d",
+                "History progress: "
+                "%d/%d | Successful: %d",
                 index,
                 total,
                 successful
             )
 
         # ----------------------------------------------------
-        # CONTROLLED REQUEST DELAY
+        # WAIT BETWEEN NORMAL REQUESTS
         # ----------------------------------------------------
 
         time.sleep(
@@ -986,7 +1197,24 @@ def main():
     )
 
     logger.info(
-        "No OI / Funding / Volume / Order Book / MACD / 1M."
+        "No OI / Funding / Volume / "
+        "Order Book / MACD / 1M."
+    )
+
+    logger.info(
+        "Normal Binance request delay: "
+        "%.1f seconds.",
+        STARTUP_REQUEST_DELAY
+    )
+
+    logger.info(
+        "429 cooldown: %d seconds.",
+        RATE_LIMIT_WAIT
+    )
+
+    logger.info(
+        "418 cooldown: %d seconds.",
+        IP_BAN_WAIT
     )
 
     # --------------------------------------------------------
@@ -1008,13 +1236,10 @@ def main():
             )
 
             logger.info(
-                "Retrying in %d seconds...",
-                STARTUP_RETRY_DELAY
+                "Retrying in 60 seconds..."
             )
 
-            time.sleep(
-                STARTUP_RETRY_DELAY
-            )
+            time.sleep(60)
 
             continue
 
@@ -1029,24 +1254,18 @@ def main():
         if not history_ok:
 
             logger.error(
-                "Initial history loading was stopped "
-                "because Binance rate limiting/IP ban was detected."
+                "History loading stopped because "
+                "Binance rate limiting/IP ban "
+                "was detected."
             )
 
             logger.info(
-                "Waiting %d seconds before retry...",
-                IP_BAN_RETRY_DELAY
+                "Waiting 60 seconds before retry..."
             )
 
-            time.sleep(
-                IP_BAN_RETRY_DELAY
-            )
+            time.sleep(60)
 
             continue
-
-        # ----------------------------------------------------
-        # HISTORY SUCCESS
-        # ----------------------------------------------------
 
         break
 
@@ -1056,13 +1275,21 @@ def main():
 
     startup_message = (
         "🟢 RSI SCANNER IS NOW RUNNING\n\n"
-        "Binance Futures USDT Perpetuals\n\n"
+
+        "Binance Futures "
+        "USDT Perpetuals\n\n"
+
         "Conditions:\n"
         "1H RSI7 < RSI14\n"
         "15M RSI7 < RSI14\n"
         "5M RSI7 fresh cross below RSI14\n\n"
-        "Signal check: 5M candle close only\n"
-        "Duplicate alert: blocked per 5M candle\n\n"
+
+        "Signal check: "
+        "5M candle close only\n"
+
+        "Duplicate alert: "
+        "blocked per 5M candle\n\n"
+
         "Only RSI conditions are used."
     )
 
@@ -1104,7 +1331,6 @@ def main():
 
         thread.start()
 
-        # Small delay between connections.
         time.sleep(2)
 
     logger.info(
@@ -1113,6 +1339,7 @@ def main():
 
     # Keep process alive.
     while True:
+
         time.sleep(60)
 
 
@@ -1121,4 +1348,6 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
+```
